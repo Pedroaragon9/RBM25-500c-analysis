@@ -1,0 +1,769 @@
+---
+title: "Mafalda-RBM25"
+author: "Pedro"
+date: "2024-09-25"
+output: html_document
+---
+
+# Libraries
+```{r}
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+install.packages(c("BiocManager", "remotes"))
+BiocManager::install(version = "3.18", ask = FALSE)
+bioCon <- c("QFeatures","msqrob2", "SingleCellExperiment", "scp", "scpdata", "scater", "Biostrings","org.Hs.eg.db", "GO.db", "destiny", "zellkonverter", "scran", "ComplexHeatmap", "bluster")
+CRANpkgs <- c("tidyverse","viridis", "patchwork", "plotly", "impute", "RcolorBrewer", "limma", "circlize", "reticulate", "ggrepel", "ggpp", "gridExtra")
+
+install.packages(CRANpkgs)
+BiocManager::install(bioCon)
+#BiocManager::install("UCLouvain-CBIO/scp#50")
+
+## Core packages
+library("scp")
+
+## Utility packages
+library("patchwork")
+library("scater")
+library("Biostrings")
+library("destiny")
+library("impute")
+library("scran")
+library("ComplexHeatmap")
+library("RColorBrewer")
+library("limma")
+library("bluster")
+library("circlize")
+library("ggrepel")
+library("ggpp")
+library("gridExtra")
+library("viridis")
+library("plotly")
+library("org.Hs.eg.db")
+library("GO.db")
+library("msqrob2")
+library("reshape2")
+library("tidyverse")
+```
+
+# Summary statistics of ms runs
+```{r}
+# General ID overview of the runs
+dir <- "/Volumes/bio/MBT-g-Cell-Diversity-Lab/PEDRO/PorseLab/Mafalda/20240711_152750_Mafalda_cKIT"
+  
+# Fetch all run overview files and store summary statistics in stats
+run_list <- list.files(dir, recursive = T, pattern = '_RunOverview.tsv')
+stats <- data.frame(run_list)
+stats <- stats %>% column_to_rownames(., var = 'run_list')
+
+wt1_replicates <- c("1888", "1900", "1904", "1914")
+wt2_replicates <- c("1866", "1880", "1894", "1912")
+hetko_replicates <- c("1864", "1868", "1892", "1902")
+
+# Combine all replicates into a single vector for matching
+Replicate <- c(wt1_replicates, wt2_replicates, hetko_replicates)
+
+# Create the regex pattern for replicates
+replicate_pattern <- paste(Replicate, collapse = "|")
+
+# Loop through each run file in the run list
+for (r in run_list) {
+  # Read the data from each run file
+  prot <- read.delim(paste(dir, '/', r, sep = ""), skipNul = TRUE) %>% as_tibble()
+  
+  # Extract various statistics from the file
+  stats[r, 'Precursors'] <- as.numeric(gsub(",", "", sub(" .*", "", prot$Value[1])))
+  stats[r, 'Peptides'] <- as.numeric(gsub(",", "", sub(" .*", "", prot$Value[3])))
+  stats[r, 'Protein.Groups'] <- as.numeric(gsub(",", "", sub(" .*", "", prot$Value[4])))
+  stats[r, 'Data.Points.per.Peak.(MS1)'] <- str_extract(prot$Value[25], "[^ ]+")
+  stats[r, 'Data.Points.per.peak.(MS2)'] <- str_extract(prot$Value[26], "[^ ]+")
+  stats[r, 'Median.FWHM'] <- sub(",", ".", str_extract(prot$Value[21], "[^ ]+"))
+  stats[r, 'Median.Peak.Width'] <- sub(",", ".", str_extract(prot$Value[22], "[^ ]+"))
+  stats[r, '%.Missed.Cleavages'] <- sub(",", ".", str_extract(prot$Value[9], "[^ ]+"))
+  stats[r, '%.Missed.Cleavages.Identified'] <- sub(",", ".", str_extract(prot$Value[10], "[^ ]+"))
+
+  # Extract the replicate number from the filename using the pattern
+  replicate <- str_extract(r, replicate_pattern)
+  stats[r, "Replicate"] <- replicate
+
+  # Assign the correct condition based on the replicate value
+  if (!is.na(replicate)) {
+    if (replicate %in% wt1_replicates) {
+      stats[r, "Condition"] <- "WT 1: +/+; Mx1-Cre"
+    } else if (replicate %in% wt2_replicates) {
+      stats[r, "Condition"] <- "WT 2: fl/+"
+    } else if (replicate %in% hetko_replicates) {
+      stats[r, "Condition"] <- "HetKO: fl/+; Mx1-Cre"
+    }
+  } else {
+    stats[r, "Condition"] <- NA  # Handle cases where the replicate does not match any known condition
+  }
+}
+
+#Map the cell types from the filenames to the actual cell types
+stats <- stats %>%
+  rownames_to_column("filename") %>%
+  mutate(filename = sub("\\.raw.*", "", filename)) %>% 
+  mutate(filename = sub(".*RunSummaries/", "", filename))
+
+#Plot the summary statistics of identifications
+pivot.stats <- stats %>%
+  pivot_longer(cols = c("Precursors", "Peptides", "Protein.Groups"), names_to = "Variable", values_to = "Value") %>%
+  group_by(Replicate, Variable) %>%
+  summarise(Mean = mean(Value, na.rm = TRUE)) %>%
+  mutate(Variable = factor(Variable, levels = c("Precursors", "Peptides", "Protein.Groups")))
+
+#Plot the means as bars and individual measurements as jitter
+ggplot() +
+geom_bar(data = pivot.stats, aes(x = Replicate, y = Mean, fill = reorder(Variable, -Mean)),
+        position = "dodge", stat = "identity") +
+geom_jitter(data = stats, aes(x = as.numeric(factor(Replicate)) - 0.275, y = Precursors, color = "Precursors"), 
+            position = position_jitter(width = 0.07), size = 1, show.legend = FALSE) +
+geom_jitter(data = stats, aes(x = as.numeric(factor(Replicate)), y = Peptides, color = "Peptides"), 
+            position = position_jitter(width = 0.07), size = 1, show.legend = FALSE) +
+geom_jitter(data = stats, aes(x = as.numeric(factor(Replicate)) + 0.275, y = Protein.Groups, color = "Protein.Groups"), 
+            position = position_jitter(width = 0.07), size = 1, show.legend = FALSE) +
+labs(x = "Mouse #", y = "Count", fill = "Feature") +
+scale_fill_manual(values = c("#0077be","#92b0da", "#b7d1c8"), name = "Feature", labels = c("Precursors", "Peptides", "Protein Groups")) +
+scale_color_manual(values = c("#635b83", "#a3c4f3","#6b9d9b")) +
+scale_y_continuous(breaks = seq(0, 60000, by = 5000)) +
+theme_bw() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("20240711_152750_Mafalda_cKIT/Figures/summary_stats.pdf", width = 7.5, height = 5, dpi = 300)
+```
+
+# Intial clean up and data preparation
+To accomodate the scp package requirements for analysis, the data was reshaped and the metadata was added to the quantitative data.
+```{r}
+SN.PEPquant <- read.delim("20240711_152750_Mafalda_cKIT/Mafalda_cKIT_Report_PEPQuant (Normal).tsv")
+
+SN.PEPquant <- merge(SN.PEPquant, stats[, c("filename", "Condition", "Replicate")], 
+                     by.x = "R.FileName", by.y = "filename", all.x = TRUE)
+
+#reshape the data to generate the input table and sample table required for the scp package
+inputCols <- c("FG.MS1Quantity", "R.FileName", "PG.Genes", "PG.ProteinAccessions", "PG.IsSingleHit", "PEP.StrippedSequence", "FG.Charge", "EG.Qvalue")
+sampleCols <- c("R.FileName", "Condition", "Replicate")
+
+sampleData <- SN.PEPquant %>% 
+  select(all_of(sampleCols)) %>%
+  distinct() %>%
+  mutate(Quant.Col = "FG.MS1Quantity")
+
+inputData <- SN.PEPquant %>%
+  select(all_of(inputCols))
+```
+
+# Create a QFeatqures object
+```{r}
+
+
+names(sampleData)[1] <- "runCol" #This is a problem with .checkRunCol() function
+scp <- readQFeaturesFromDIANN(assayData = inputData,
+                            colData = sampleData,
+                            runCol = "R.FileName",
+                            quantCols ="FG.MS1Quantity",
+                            removeEmptyCols = TRUE)
+
+
+scp <- zeroIsNA(scp, i = names(scp))
+scp <- infIsNA(scp,i = names(scp))
+
+
+# Fixes typo on the colData
+coldata <- colData(scp)
+coldata$Condition[is.na(coldata$Condition)] <- "HetKO: fl/+; Mx1-Cre" # Replaces NA values in Condition column
+coldata$Replicate[is.na(coldata$Replicate)] <- "1892" # Replaces NA values in Replicate column
+colData(scp) <- coldata
+```
+
+## Aggregate Precursors into Peptides
+```{r}
+#Filter for Qval < 0.01
+scp <- filterFeatures(scp,
+                      ~ EG.Qvalue <= 0.01)
+
+scp <- aggregateFeaturesOverAssays(scp,
+                                  i = names(scp),    ## assays to be aggregated
+                                  name = paste0("Peptides_", names(scp)), ## new assay name
+                                  fcol = "PEP.StrippedSequence", 
+                                  fun = matrixStats::colMedians,
+                                  na.rm = TRUE)
+scp <- joinAssays(scp,
+                i = grep("Peptides_", names(scp)),
+                name = "Peptides")
+
+# Log2 transoform
+scp <- logTransform(scp,
+                    i = "Peptides",
+                    name = "Peptides_log")
+
+scp <- normalize(scp,
+                    i= "Peptides_log",
+                    name = "lognorm_Peptides",
+                    method = "center.median")
+
+# Normalize the data
+# TODO: Keep an eye on other normalization methods
+par(mfrow = c(1, 4))
+limma::plotDensities(assay(scp[["Peptides"]]), legend = FALSE, main = "non-log")
+limma::plotDensities(assay(scp[["Peptides_log"]]), legend = FALSE, main = "log2")
+limma::plotDensities(assay(scp[["lognorm_Peptides"]]), legend = FALSE, main = "log2 normal")
+boxplot(assay(scp[["lognorm_Peptides"]]),
+    col = palette()[-1], ylab = "intensity",
+    xlab = "samples",
+    main = "log2 normal intensities",
+    xaxt = "n")
+plot(scp)
+```
+### Peptide Imputation
+```{r}
+# TODO: Figure out how to get rid of these bad precursors. 
+# Impute with MinDet
+scp <- impute(scp,
+              i = "lognorm_Peptides",
+              method = "MinDet",
+              name = "Peptides_imp_mindet",
+              MARGIN = 1L) #Performs imputation on a feature-wise basis
+
+par(mfrow = c(1, 2))
+limma::plotDensities(assay(scp[["lognorm_Peptides"]]), legend = FALSE, main = "none-imputed")
+limma::plotDensities(assay(scp[["Peptides_imp_mindet"]]), legend = FALSE, main=  "minimal val - feature wise")
+table(is.na(assay(scp[["lognorm_Peptides"]])))
+table(is.na(assay(scp[["Peptides_imp_mindet"]])))
+```
+
+## Protein aggregation
+```{r}
+#This function calculates the robust summarisation for each feature (protein).
+#Note that the function assumes that the intensities in input e are already log-transformed.
+scp <- aggregateFeatures(scp,
+                         i = "lognorm_Peptides",
+                         fcol= "PG.ProteinAccessions",
+                         name = "Proteins",
+                         fun = MsCoreUtils::robustSummary) 
+
+#aggregate imputed features as well
+scp <- aggregateFeatures(scp,
+                         i = "Peptides_imp_mindet" ,
+                         fcol= "PG.ProteinAccessions",
+                         name = "Proteins_imp",
+                         fun = MsCoreUtils::robustSummary) 
+
+
+#We now perform centering followed by scalling of the data to unit variance
+means <- rowMeans(assay(scp, "Proteins"))
+scp <- sweep(scp, MARGIN = 1, STATS = means, FUN = "-",
+             i = "Proteins", name = "Proteins_centered")
+stds <- rowSds(assay(scp, "Proteins_centered"))
+scp <- sweep(scp, MARGIN = 1, STATS = stds, FUN = "/",
+             i = "Proteins_centered", name = "Proteins_scaled")
+
+par(mfrow = c(1, 3))
+limma::plotDensities(assay(scp[["Proteins_scaled"]]), legend = FALSE, main = "Z-scored")
+limma::plotDensities(assay(scp[["Proteins_centered"]]), legend = FALSE, main = "centered")
+limma::plotDensities(assay(scp[["Proteins"]]), legend = FALSE, main = "'raw'")
+
+plot(scp, interactive = TRUE) 
+table(rowData(scp[["Proteins"]])$.n)
+table(is.na(assay(scp[["Proteins"]])))
+
+par(mfrow = c(1, 2))
+limma::plotDensities(assay(scp[["Proteins"]]), legend = FALSE, main = "non-imputed")
+limma::plotDensities(assay(scp[["Proteins_imp"]]), legend = FALSE, main = "imputed")
+
+```
+
+# RBM25 exploration
+## Foldchange calculation
+```{r, fig.width= 4, fig.height= 5}
+rowData(scp[["Proteins"]])
+table(rowData(scp[["Proteins"]])$.n)
+
+# Define the features of interest
+features <- c("B2RY56")
+feature_names <- c("B2RY56" = "rbm25")
+
+# Loop through each feature and generate plots
+# This was initially made to extract a vector of features of interest
+for (feature in features) {
+  
+  # Subset and transform the data for the current feature
+  feature_df <- longFormat(scp[feature, ]) |>
+      as.data.frame() |>
+      filter(assay %in% c("Proteins")) |>
+      mutate(
+      assay = factor(assay, levels = c("Proteins")),
+      replicate = str_extract(primary, replicate_pattern),
+      replicate = if_else(is.na(replicate), "1892", replicate),
+      sample = str_extract(colname, "(?<=_)[0-9]+(?=FG\\.MS1Quantity)"),
+      id = paste(replicate, sample, sep = "_"),
+      condition = case_when(
+        replicate %in% wt1_replicates ~ "WT 1: +/+; Mx1-Cre",
+        replicate %in% wt2_replicates ~ "WT 2: fl/+",
+        replicate %in% hetko_replicates ~ "HetKO: fl/+; Mx1-Cre"),
+      feature_name = feature_names[feature]) |>
+      filter(replicate != "1868")
+}
+
+# Calculate mean values for each condition
+mean_values <- feature_df %>%
+  group_by(condition) %>%
+  summarise(mean_value = mean(2^value))
+
+# Extract the mean value for HetKO condition (to be used for fold change calculations)
+hetko_mean <- mean_values %>% filter(condition == "HetKO: fl/+; Mx1-Cre") %>% pull(mean_value)
+
+# Calculate the fold change relative to HetKO
+mean_values <- mean_values %>%
+  mutate(fold_change = mean_value / hetko_mean)
+
+# Create the barplot with annotations for fold change
+ggplot(feature_df, aes(x = condition, y = 2^value)) +
+  geom_bar(stat = "summary", fun = "mean", aes(fill = condition)) +
+  geom_jitter(aes(color = condition), width = 0.15, size = 2, alpha = 0.7) +
+  stat_summary(fun.data = "mean_se", geom = "errorbar", width = 0.2, color = "black") +
+  geom_text(data = mean_values %>% filter(condition != "HetKO: fl/+; Mx1-Cre"), 
+            aes(x = condition, y = mean_value, label = paste0("FC: ", round(fold_change, 2))), 
+            vjust = -1.5, size = 5, color = "black") +
+  labs(x = "Condition", y = "Norm. expression") +
+  theme_bw() +
+  scale_fill_manual(values = c("WT 1: +/+; Mx1-Cre" = "#b3cde0",
+                               "WT 2: fl/+" = "#006666",
+                               "HetKO: fl/+; Mx1-Cre" = "#3d85c6")) +
+  scale_color_manual(values = c("WT 1: +/+; Mx1-Cre" = "#8fa4b3",
+                               "WT 2: fl/+" = "#7fb2b2",
+                               "HetKO: fl/+; Mx1-Cre" = "#1e4263")) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("20240711_152750_Mafalda_cKIT/Figures/fold_change.pdf", width = 2, height = 4, dpi = 300)
+```
+
+## Expression profiles of RBM25
+```{r, fig.width= 10, fig.height=7}
+# Define a color palette for 12 replicates
+replicate_colors <-  c("#6aa84f", "#d98e47", "#3d85c6", "#bf63bf", "#e89691",
+                                "#FF1493", "#20B2AA", "#FF4500", "#b3cde0", "#006666", "#a7adba", "#FF69B4")
+
+# Loop through each feature and generate plots
+output_directory <- "20240711_152750_Mafalda_cKIT/Figures"
+
+# Create the directory if it doesn't exist
+if (!dir.exists(output_directory)) {
+  dir.create(output_directory, recursive = TRUE)
+}
+
+for (feature in features) {
+  
+  # Subset and transform the data for the current feature
+  feature_df <- longFormat(scp[feature, ]) |>
+      as.data.frame() |>
+      filter(assay %in% c("lognorm_Precursors","Peptides", "Proteins_scaled")) |>
+      mutate(
+      assay = factor(assay, levels = c("lognorm_Precursors", "Peptides", "Proteins_scaled")),
+      replicate = str_extract(primary, replicate_pattern),
+      replicate = if_else(is.na(replicate), "1892", replicate),
+      sample = str_extract(colname, "(?<=_)[0-9]+$"),
+      id = paste(replicate, sample, sep = "_"),
+      condition = case_when(
+        replicate %in% wt1_replicates ~ "WT 1: +/+; Mx1-Cre",
+        replicate %in% wt2_replicates ~ "WT 2: fl/+",
+        replicate %in% hetko_replicates ~ "HetKO: fl/+; Mx1-Cre"),
+      feature_name = feature_names[feature]) 
+  
+  feature_df_mean <- feature_df %>%
+    group_by(assay, replicate, sample, condition) %>%
+    summarize(mean_value = mean(value, na.rm = TRUE), .groups = 'drop')
+
+  # Plotting the original data points and the summarized mean lines on top
+  p <- ggplot() +
+       geom_point(data = feature_df, aes(x = sample, 
+                                         y = value, 
+                                         color = replicate, 
+                                         group = replicate)) +
+       geom_line(data = feature_df_mean, aes(x = sample, 
+                                             y = mean_value, 
+                                             color = replicate, 
+                                             group = replicate),
+                                             linetype = "solid", 
+                                             size = 1) +  
+       geom_point(data = feature_df_mean, aes(x = sample, 
+                                              y = mean_value, 
+                                              color = replicate, 
+                                              group = replicate),size = 1) +
+        facet_grid(assay ~ condition, scales = "free_y", drop = TRUE) +  
+        scale_color_manual(values = replicate_colors) +  
+        theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8)) +
+        labs(title = paste("Feature:", feature_names[feature]))
+
+  # Print the plot
+  print(p)
+
+  # Save the plot (uncomment to use)
+  ggsave(
+     filename = paste0(output_directory, "/", feature_names[feature], ".pdf"), 
+     plot = p,  
+     device = "pdf", 
+     width = 8,       
+     height = 6      
+   )
+}
+
+# Fast access to .n
+row_data <- as.data.frame(rowData(scp[["Proteins_scaled"]]))
+
+
+# Heatmap
+# Initialize an empty dataframe to store results
+scaled_proteins <- data.frame()
+
+# Loop through each feature to subset the data and filter for Proteins_scaled assay
+for (feature in features) {
+  
+  # Subset and transform the data for the current feature, filtering for "Proteins_scaled"
+  feature_df <- longFormat(scp[feature, ]) |>
+      as.data.frame() |>
+      filter(assay %in% c("Proteins_scaled")) |>
+      mutate(
+      assay = factor(assay, levels = c("Proteins_scaled")),
+      replicate = str_extract(primary, replicate_pattern),
+      replicate = if_else(is.na(replicate), "1892", replicate),
+      sample = str_extract(colname, "(?<=_)[0-9]+$"),
+      id = paste(replicate, sample, sep = "_"),
+      condition = case_when(
+        replicate %in% wt1_replicates ~ "WT 1: +/+; Mx1-Cre",
+        replicate %in% wt2_replicates ~ "WT 2: fl/+",
+        replicate %in% hetko_replicates ~ "HetKO: fl/+; Mx1-Cre"),
+           feature_name = feature_names[feature])  # Add feature name for tracking
+  
+  # Append to the combined dataframe
+  scaled_proteins <- rbind(scaled_proteins, feature_df)
+}
+
+scaled_proteins <- scaled_proteins %>%
+  arrange(condition, replicate, sample) %>%
+  mutate(
+    position = as.numeric(factor(id, levels = unique(id))),  # Create a unique numeric position for each sample
+    # Add spacing between conditions by incrementing positions for the next condition
+    position = position + cumsum(!duplicated(condition)) - 1  # Adds a gap at the start of each new condition
+  )
+
+# Calculate the midpoint for each condition block to place the condition label
+condition_labels <- scaled_proteins %>%
+  group_by(condition) %>%
+  summarize(
+    midpoint = mean(range(position)),  # Calculate the midpoint of positions for the condition
+    max_y = max(as.numeric(factor(feature_name)))  # Determine the top y position for placing the label
+  )
+
+
+# Generate the heatmap with square tiles
+heatmap_expression <- ggplot(scaled_proteins, 
+                             aes(x = position, y = feature_name, fill = value)) +
+  geom_tile(width = 0.9, height = 0.9) +  # This creates the tiles for the heatmap
+  scale_fill_distiller(palette = "RdBu", direction = -1,  # Reverse RdBu color palette
+                       name = "Value", 
+                       limits = c(-2.5, 2.5),  # Cap the gradient scale at -2.5 and 2.5
+                       oob = scales::squish) +
+  coord_fixed(ratio = 1) +  # Force a fixed aspect ratio of 1:1 for square tiles
+  theme_minimal() +  # Minimal theme for a cleaner look
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),  # Rotate the x-axis labels
+    panel.grid = element_blank()  # Remove the background grid lines
+  ) +
+  labs(x = "Samples", y = "Proteins") +
+  scale_x_continuous(breaks = scaled_proteins$position, 
+                     labels = scaled_proteins$id,  # Show the original sample IDs as labels
+                     expand = expansion(mult = c(0.01, 0.05))) +  # Slight expansion to improve visual spacing
+  expand_limits(y = max(condition_labels$max_y) + 2) +  # Expand y-axis to make room for condition labels
+  # Add condition labels on top of the blocks
+  geom_text(data = condition_labels, 
+            aes(x = midpoint, y = max_y + 1, label = condition),  # Adjust position to move text higher
+            size = 3, fontface = "bold", vjust = 0, 
+            inherit.aes = FALSE)  # Prevent inheritance of unwanted aesthetics
+
+# Print the heatmap
+print(heatmap_expression)
+ggsave("20240711_152750_Mafalda_cKIT/Figures/heatmap_expression.pdf", heatmap_expression, width = 10, height = 2, dpi = 300)
+```
+
+### List of Peptides in RBM25
+```{r}
+# Initialize an empty data frame to collect results across features
+all_peptides_by_condition <- data.frame()
+
+# Loop through each feature
+for (feature in features) {
+  
+  # Subset and transform the data for the current feature
+  feature_df <- longFormat(scp[feature, ]) |>
+    as.data.frame() |>
+    filter(assay %in% c("Peptides")) |>
+    mutate(
+      replicate = str_extract(primary, replicate_pattern),
+      replicate = if_else(is.na(replicate), "1892", replicate),
+      sample = str_extract(colname, "(?<=_)[0-9]+(?=FG\\.MS1Quantity)"),
+      id = paste(replicate, sample, sep = "_"),
+      condition = case_when(
+        replicate %in% wt1_replicates ~ "WT 1: +/+; Mx1-Cre",
+        replicate %in% wt2_replicates ~ "WT 2: fl/+",
+        replicate %in% hetko_replicates ~ "HetKO: fl/+; Mx1-Cre"
+      ),
+      feature_name = feature_names[feature]
+    )
+
+  # Group by condition and collect unique peptide sequences from the 'rowname' column
+  peptides_by_condition <- feature_df %>%
+    group_by(condition) %>%
+    summarize(peptides = list(unique(rowname)), .groups = 'drop')  # List unique peptides for each condition
+
+  # Convert the list of peptides into a readable format if needed (optional)
+  peptides_table <- peptides_by_condition %>%
+    mutate(peptides = sapply(peptides, function(x) paste(x, collapse = ", ")))  # Concatenate peptide sequences
+
+  # Append the results to the combined dataframe
+  all_peptides_by_condition <- bind_rows(all_peptides_by_condition, peptides_table)
+}
+
+# Display the combined table of peptides by condition
+view(all_peptides_by_condition)
+```
+
+# Missing values and predicted coverage
+```{r, fig.width= 7.5, fig.height= 10}}
+isIdentified <- function(x) colSums(!is.na(x)) != 0
+
+scpNA <- aggregateFeaturesOverAssays(scp,
+                                  i = 1:48,    ## assays to be aggregated
+                                  name = paste0("MV_proteins", grep("20240705", names(scp)[1:48])), ## new assay name
+                                  fcol = "PG.ProteinAccessions",    ## what to aggregate
+                                  fun = isIdentified)                                  
+
+scpNA <- joinAssays(scpNA,
+                    i = grep("MV_proteins", names(scpNA)), 
+                        name = "prot_id") 
+
+isMissing_prot <- is.na(assay(scpNA[["prot_id"]]))
+assay(scpNA[["prot_id"]])[isMissing_prot] <- FALSE
+
+coldata <- colData(scpNA)
+coldata$Condition[is.na(coldata$Condition)] <- "HetKO: fl/+; Mx1-Cre" # Replaces NA values in Condition column
+coldata$Replicate[is.na(coldata$Replicate)] <- "1892" # Replaces NA values in Replicate column
+colData(scpNA) <- coldata
+#Here sensitivity is defined as the number of distinct peptide identifications.
+#Local sensitivity reported as the number of features per cell.
+#Total sensitivity reported as the number of features across all cells within a celltype.
+prot_sensitivity_summary <- reportMissingValues(scpNA, "prot_id", by = scpNA$Replicate)
+prot_sensitivity_summary <- rownames_to_column(prot_sensitivity_summary, var = "Replicate")
+
+p1 <- ggplot(prot_sensitivity_summary, aes(x = Completeness*100, y = LocalSensitivityMean, color = Replicate, size = NumberCells)) +
+        geom_point() +
+        geom_linerange(aes(ymin = LocalSensitivityMean - LocalSensitivitySd, ymax = LocalSensitivityMean + LocalSensitivitySd), size = 1) +
+        scale_color_manual("Mice",
+                        values = c("#6aa84f", "#d98e47", "#3d85c6", "#bf63bf", "#e89691",
+                                "#FF1493", "#20B2AA", "#FF4500", "#b3cde0", "#006666", "#a7adba", "#FF69B4"),
+                        name = "Mouse #") +
+        labs(x = "Completeness [%]", y = "Average protein features per Mouse", size = "Number of replicates", color = "Population") +
+        theme_bw()
+  
+
+#Evaluate similarity/consistency of identifications across celltypes
+ji_prot <- jaccardIndex(scpNA, "prot_id", by = scpNA$Condition)
+
+medians <- ji_prot %>%
+  group_by(by) %>%
+  summarise(median = median(jaccard))
+
+p2 <- ggplot(ji_prot, aes(x = jaccard, fill = by)) +
+  geom_histogram(alpha = 0.7) +
+  geom_vline(data = medians, aes(xintercept = median), linetype = "dashed", color = "#5b5b5b") +
+  geom_text_repel(data = medians, aes(x = median, y = 0, label = paste("Median:", round(median, 2))), nudge_y = 0.5) +  
+  facet_grid(by ~ ., scales = "free_y") +
+  scale_fill_manual("Condition",
+                    values = c("#3d85c6",  "#b3cde0", "#006666")) +
+  labs(x = "Jaccard Index", y = "Count") +
+  theme_minimal() +
+  theme(strip.text = element_blank())
+
+#TODO: Add correct colData information
+csc_prot <- cumulativeSensitivityCurve(scpNA, "prot_id", by = scpNA$Condition,
+                                  niters = 10, 
+                                  nsteps = max(48))
+
+pCSC_prot <- ggplot(csc_prot) +
+  aes(x = SampleSize, y = Sensitivity, colour = by) +
+  geom_point(size = 2, alpha = 0.7) +
+  scale_color_manual("Condition",
+                  values = c("#3d85c6",  "#b3cde0", "#006666")) + 
+                   labs(x = "Number of samples", y = "Sensitivity") +
+                   theme_minimal() 
+
+predCSC_prot <- predictSensitivity(csc_prot, nSample = 1:length(unique(csc_prot$SampleSize)))
+
+#Add the maximal predicted sensitivity to the plot
+prot_maxSensitivity <- predictSensitivity(csc_prot, nSamples = Inf)
+
+prot_maxSensitivity <- prot_maxSensitivity %>%
+  dplyr::select(-SampleSize) %>%
+  rename(Condition = by, "Max. predicted sensitivity" = Sensitivity) %>%
+  dplyr::select(Condition, "Max. predicted sensitivity", everything()) %>%
+  mutate(Condition = case_when(
+    Condition == "HetKO: fl/+; Mx1-Cre" ~ "HetKO: fl/+; Mx1-Cre",
+    Condition == "WT 2: fl/+" ~ "WT 2: fl/+",
+    Condition == "WT 1: +/+; Mx1-Cre"  ~ "WT 1: +/+; Mx1-Cre"))
+
+p3 <- pCSC_prot + 
+        geom_line(data = predCSC_prot, size = 1) +
+        geom_table(data = prot_maxSensitivity, 
+                  aes(x = Inf, y = -Inf, label = list(prot_maxSensitivity)), 
+                  hjust = 1, vjust = 0) +
+                  theme(legend.position = "none") 
+(p1 | p2) / p3 + plot_annotation(tag_levels = 'A') + plot_layout(guides = 'collect')
+#ggsave("20240711_152750_Mafalda_cKIT/Figures/missing_values.pdf", width = 7.5, height = 7)
+```
+
+# Differential expression analysis using robust estimation 
+## Clean up certain atrributes in ColData
+```{r}
+# Removes unsuccesfull KO
+colData(scp) <- colData(scp)[colData(scp)$Replicate != "1868", ]
+scp <- scp[, colnames(scp) %in% rownames(colData(scp))]
+
+# Recode the condition column to deal wird rare expression patterns
+colData(scp)$ab.condition <- dplyr::recode(colData(scp)$Condition,
+                                           "HetKO: fl/+; Mx1-Cre" = "KO",
+                                           "WT 1: +/+; Mx1-Cre" = "WT1",
+                                           "WT 2: fl/+" = "WT2")
+pe <- scp
+```
+
+## Robust parameter estimation
+```{r}
+# Estimation using msqrob
+pe <- msqrob(object = pe, i = "Proteins", formula = ~ab.condition, overwrite = TRUE)
+
+# Extract the coefficients
+getCoef(rowData(pe[["Proteins"]])$msqrobModels[[1]])
+# Make contrasts 
+L <- makeContrast(c("ab.conditionWT1=0", 
+                    "ab.conditionWT2=0"),
+                  parameterNames = c(
+                      "(Intercept)",
+                      "ab.conditionWT1",
+                      "ab.conditionWT2"))
+
+#test hypothesis
+pe <- hypothesisTest(object = pe, i = "Proteins", contrast = L, overwrite = TRUE)
+```
+
+### plot volcano plots
+```{r, fig.width= 10, fig.height= 5}
+volcanoMed <- rowData(pe[["Proteins"]])$ab.conditionWT1 %>%
+    ggplot(aes(x = logFC, y = -log10(pval), color = adjPval < 0.01)) +
+    geom_point(cex = 2.5) +
+    scale_color_manual(values = alpha(c("black", "red"), 0.5)) +
+    theme_minimal() +
+    geom_vline(xintercept = log2(0.74 / .25), col = "red") +
+    ggtitle("median summarisation")
+
+
+WT1_KO <- rowData(pe[["Proteins"]])$ab.conditionWT1 %>% 
+  rownames_to_column("Proteins") %>% 
+  mutate(
+    color = case_when(
+      logFC > 0.5 & adjPval < 0.05 ~ "#9fbadf",   # Higher logFC and significant
+      logFC < -0.5 & adjPval < 0.05 ~ "#ff661a",   # Lower logFC and significant
+      TRUE ~ "#dcdfe1"                            # Everything else
+    )
+  )
+
+top_proteins <- WT1_KO %>%
+  filter(adjPval < 0.05 & abs(logFC) > 0.5) %>%
+  top_n(25, wt = abs(logFC)) %>%
+  bind_rows(WT1_KO %>% filter(Proteins == "B2RY56"))
+
+
+
+
+#Heatmap on differentially expressed proteins
+zscore_normalized <- t(apply(assay(pe[["Proteins"]]), 1, function(x) {
+  (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+}))
+
+# Step 2: Subset the Z-score normalized data for the selected proteins (top_proteins)
+subset_zscore <- zscore_normalized[rownames(zscore_normalized) %in% top_proteins$Proteins, ]
+
+# Step 3: Convert the subsetted Z-score normalized matrix into long format
+melted_data <- melt(subset_zscore)
+
+# Step 4: Add sample information from colData to the melted data
+coldata <- colData(pe) %>%
+  as.data.frame() %>%
+  rownames_to_column("Samples")
+
+# Join with the melted data and clean up column names
+melted_data <- melted_data %>%
+  rename(PG.ProteinAccessions = Var1) %>%  # Rename Var1 to match the reference column
+  left_join(data.frame(
+    PG.ProteinAccessions = rowData(scp[["Proteins"]])$PG.ProteinAccessions,
+    PG.Genes = rowData(scp[["Proteins"]])$PG.Genes
+  ), by = "PG.ProteinAccessions") %>%  # Map accessions to gene symbols
+  left_join(coldata, by = c("Var2" = "Samples")) %>%
+  select(-Var2) %>%
+  mutate(id = str_remove(runCol, ".*20ng_"))
+
+# Create the heatmap using geom_tile, displaying NAs as a specific color (e.g., grey)
+ggplot(melted_data, aes(x = id, y = PG.Genes, fill = value)) +
+  geom_tile(width = 0.9, height = 0.9) +  # Create tiles for the heatmap
+  scale_fill_distiller(palette = "RdBu", direction = -1,  # Reverse RdBu color palette
+                       name = "Z-score", 
+                       limits = c(-3, 3),  # Cap the gradient scale at -3 and 3
+                       oob = scales::squish) +  # Squish out-of-bound values to the color limits
+  facet_wrap(~ Condition, scales = "free_x", nrow = 1) +  # Segment by Condition
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),  # Rotate the x-axis labels
+    panel.grid = element_blank(),
+    strip.text = element_text(size = 12, face = "bold")  # Customize condition block labels
+  ) +
+  labs(x = "Samples", y = "Proteins")
+ggsave("20240711_152750_Mafalda_cKIT/Figures/DE_expression_heatmap.pdf", width = 10, height = 7)
+```
+
+#Principal Component Analysis
+```{r, fig.width= 10, fig.height= 5}}
+p <- pca(assay(scp, "Proteins_imp"), metadata = colData(scp), removeVar = 0.1)
+
+screeplot(p, axisLabSize = 10, titleLabSize = 22)
+#By condition
+cond<-biplot(
+  p,
+  x = "PC1",
+  y = "PC2",
+  showLoadings = FALSE,
+  ntopLoadings = 5,
+  colby = "Condition",  # Color points by Condition
+  colLegendTitle = "Condition",  # Legend title for Condition
+  legendPosition = "right",  # Position the legend on the right
+  pointSize = 3,
+  legendLabSize = 12,
+  legendTitleSize = 14,
+  lab = NULL)
+
+#By Mouse
+mouse<-biplot(
+  p,
+  x = "PC1",
+  y = "PC2",
+  showLoadings = FALSE,
+  ntopLoadings = 5,
+  colby = "Replicate",  # Color points by Replicate
+  colLegendTitle = "Mouse #",  # Legend title for Replicate
+  legendPosition = "right",  # Position the legend on the right
+  pointSize = 3,
+  legendLabSize = 12,
+  legendTitleSize = 14,
+  lab = NULL,
+  colkey = replicate_colors)
+
+mouse + cond +  plot_layout(guides = 'collect')
+
+```
+

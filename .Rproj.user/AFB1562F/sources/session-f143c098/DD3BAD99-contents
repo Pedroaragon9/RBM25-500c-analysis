@@ -1,0 +1,336 @@
+---
+title: "Untitled"
+output: github_document
+---
+#Libraries
+```{r}
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+install.packages(c("BiocManager", "remotes"))
+BiocManager::install(version = "3.18", ask = FALSE)
+bioCon <- c("QFeatures", "SingleCellExperiment", "scp", "scpdata", "scater", "Biostrings","org.Hs.eg.db", "GO.db", "destiny", "zellkonverter", "scran", "ComplexHeatmap", "bluster")
+CRANpkgs <- c("tidyverse","viridis", "patchwork", "plotly", "impute", "RcolorBrewer", "limma", "circlize", "reticulate", "ggrepel", "ggpp", "gridExtra")
+
+install.packages(CRANpkgs)
+BiocManager::install(bioCon)
+BiocManager::install("UCLouvain-CBIO/scp#50")
+
+## Core packages
+library("scp")
+
+## Utility packages
+library("patchwork")
+library("scater")
+library("Biostrings")
+library("destiny")
+library("impute")
+library("scran")
+library("ComplexHeatmap")
+library("RColorBrewer")
+library("limma")
+library("bluster")
+library("circlize")
+library("ggrepel")
+library("ggpp")
+library("gridExtra")
+library("viridis")
+library("plotly")
+library("org.Mm.eg.db")
+library("GO.db")
+library("tidyverse")
+```
+
+# Summary statistics of ms runs
+```{r}
+# General ID overview of the runs
+dir <- "RunSummaries"
+
+# Fetch all run overview files and store summary statistics in stats
+run_list <- list.files(dir, recursive = T, pattern = '_RunOverview.tsv')
+stats <- data.frame(run_list)
+stats <- stats %>% column_to_rownames(., var = 'run_list')
+
+cell.type <- c("AAVS1","AAVS1_CEBPA", "TET2", "GATA2", "WT1", "GATA2_CEBPA", "WT1_CEBPA", "TET2_CEBPA", "GATA2_GFPhi",
+                "GATA2_GFPhi_CEBPA", "GATA2_GFPhi_CEBPA", "GATA2_GFPmid", "GATA2_GFPmid_CEBPA")
+
+# Create a regular expression pattern that matches any of the sample names
+pattern = paste0(cell.type, collapse = "|")
+
+for (r in run_list) {
+  prot <- read.delim(paste(dir, '/', r, sep = ""), skipNul = TRUE) %>% as_tibble()
+  stats[r, 'Precursors'] =  as.numeric(gsub(",", "", sub(" .*", "", prot$Value[1])))
+  stats[r, 'Peptides'] = as.numeric(gsub(",", "", sub(" .*", "", prot$Value[3])))
+  stats[r, 'Protein.Groups'] = as.numeric(gsub(",", "", sub(" .*", "", prot$Value[4])))
+  stats[r, 'Data.Points.per.Peak.(MS1)'] = str_extract(prot$Value[25], "[^ ]+")
+  stats[r, 'Data.Points.per.peak.(MS2)'] = str_extract(prot$Value[26], "[^ ]+")
+  stats[r, 'Median.FWHM'] = sub(",", ".", str_extract(prot$Value[21], "[^ ]+"))
+  stats[r, 'Median.Peak.Width'] = sub(",", ".", str_extract(prot$Value[22], "[^ ]+"))
+  stats[r, '%.Missed.Cleavages'] = sub(",", ".", str_extract(prot$Value[9], "[^ ]+"))
+  stats[r, '%.Missed.Cleavages.Identified'] = sub(",", ".", str_extract(prot$Value[10], "[^ ]+"))
+  cell.types.found <- str_extract_all(r, pattern, simplify = TRUE)
+  cell.types.concatenated <- paste(cell.types.found, collapse = ",")
+  stats[r, "Cell.Type"] = str_extract(r, "(?<=_plate1_[A-Z][0-9]_).*(?=_[0-9]+\\.raw)")
+  stats[r, "replicate"] = as.numeric(str_extract(r, "(?<=_)[0-9]+(?=\\.raw)"))
+  stats[r, "sample"] = 1 
+}
+#Map the cell types from the filenames to the actual cell types
+
+stats <- stats %>%
+  rownames_to_column("filename") %>%
+  mutate(filename = sub("\\.raw.*", "", filename))
+
+#Plot the summary statistics of identifications
+pivot.stats <- stats %>%
+  pivot_longer(cols = c("Precursors", "Peptides", "Protein.Groups"), names_to = "Variable", values_to = "Value") %>%
+  group_by(Cell.Type, Variable) %>%
+  summarise(Mean = mean(Value, na.rm = TRUE)) %>%
+  mutate(Variable = factor(Variable, levels = c("Precursors", "Peptides", "Protein.Groups")))
+
+#Plot the means as bars and individual measurements as jitter
+summary_sats <- ggplot() +
+                geom_bar(data = pivot.stats, aes(x = Cell.Type, y = Mean, fill = reorder(Variable, -Mean)),
+                          position = "dodge", stat = "identity") +
+                geom_jitter(data = stats, aes(x = as.numeric(factor(Cell.Type)) - 0.275, y = Precursors, color = "Precursors"), 
+                              position = position_jitter(width = 0.07), size = 1, show.legend = FALSE) +
+                geom_jitter(data = stats, aes(x = as.numeric(factor(Cell.Type)), y = Peptides, color = "Peptides"), 
+                              position = position_jitter(width = 0.07), size = 1, show.legend = FALSE) +
+                geom_jitter(data = stats, aes(x = as.numeric(factor(Cell.Type)) + 0.275, y = Protein.Groups, color = "Protein.Groups"), 
+                              position = position_jitter(width = 0.07), size = 1, show.legend = FALSE) +
+                labs(x = "Population", y = "Count", fill = "Feature") +
+                scale_fill_manual(values = c("#0077be","#92b0da", "#b7d1c8"), name = "Feature", labels = c("Precursors", "Peptides", "Protein Groups")) +
+                scale_color_manual(values = c("#635b83", "#a3c4f3","#6b9d9b")) +
+                scale_y_continuous(breaks = seq(0, 60000, by = 2500)) +
+                theme_bw() +
+                theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#ggsave("Figures/summary_stats.pdf", summary_stats, width = 15, height = 5, dpi = 300)
+```
+
+# Intial clean up and data preparation
+To accomodate the scp package requirements for analysis, the data was reshaped and the metadata was added to the quantitative data.
+```{r}
+#Import quantitative tables 
+SN.PEPquant <- read.delim("PorseLab_SSO_BBO_500c_hBM_Report_PEPQuant (Normal).tsv")
+SN.PEPquant %>% filter(PG.Genes == "TET2") %>%
+distinct(PEP.StrippedSequence) %>% view()
+
+#define the cell type from the file name column.
+SN.PEPquant <- merge(SN.PEPquant, stats[, c("filename", "sample", "Cell.Type")], 
+                     by.x = "R.FileName", by.y = "filename", all.x = TRUE)
+
+
+#reshape the data to generate the input table and sample table required for the scp package
+inputCols <- c("FG.MS1Quantity", "R.FileName", "PG.Genes", "PG.ProteinAccessions", "PG.IsSingleHit", "PEP.StrippedSequence", "FG.Charge")
+sampleCols <- c("R.FileName", "sample", "Cell.Type")
+
+sampleData <- SN.PEPquant %>% 
+  select(all_of(sampleCols)) %>%
+  distinct() %>%
+  mutate(Quant.Col = "FG.MS1Quantity")
+
+inputData <- SN.PEPquant %>%
+  select(all_of(inputCols))
+```
+
+## OOP using scp
+```{r}
+scp <- readSCP(featureData = inputData,
+               colData = sampleData,
+               batchCol = "R.FileName",
+               channelCol = "Quant.Col",
+               removeEmptyCols = TRUE)
+
+assay_names <- names(scp)
+
+# Normalize the assays from 1 to 215 
+# Is this appropriate?, maybe there are smater ways to do this, but until then Ill forloop it 
+for (i in 1:36) {
+  # Get the name of the current assay
+  assay_name <- assay_names[i]
+  
+  #Normalize the current assay
+  scp <- normalizeSCP(scp, assay_name, name = paste0("norm_Precursor", assay_name), method = "div.median")
+}
+
+#Aggregate the features over the assays
+scp <- aggregateFeaturesOverAssays(scp,
+                                  i = grep("norm_Precursor", names(scp)),    ## assays to be aggregated
+                                  name = paste0("peptides", grep("norm_Precursor", names(scp))), ## new assay name
+                                  fcol = "PEP.StrippedSequence",    ## what to aggregate
+                                  fun = colMedians)                   ## how to aggregate
+
+scp <- zeroIsNA(scp, i = grep("peptides", names(scp)))
+scp <- infIsNA(scp,i = grep("peptides", names(scp)))
+
+scp <- joinAssays(scp,
+                    i = grep("peptides", names(scp)),
+                    name = "Peptides")
+```
+
+## Quality control and completness   
+```{r}
+isIdentified <- function(x) colSums(!is.na(x)) != 0
+
+scpNA <- aggregateFeaturesOverAssays(scp,
+                                  i = grep("norm_Precursor", names(scp)),    ## assays to be aggregated
+                                  name = paste0("MV_proteins", grep("norm_Precursor", names(scp))), ## new assay name
+                                  fcol = "PG.ProteinAccessions",    ## what to aggregate
+                                  fun = isIdentified)                                  
+
+scpNA <- joinAssays(scpNA,
+                    i = grep("MV_proteins", names(scpNA)), 
+                        name = "prot_id") 
+
+isMissing_prot <- is.na(assay(scpNA[["prot_id"]]))
+assay(scpNA[["prot_id"]])[isMissing_prot] <- FALSE
+
+#Here sensitivity is defined as the number of distinct peptide identifications.
+#Local sensitivity reported as the number of features per cell.
+#Total sensitivity reported as the number of features across all cells within a celltype.
+prot_sensitivity_summary <- reportMissingValues(scpNA, "prot_id", by = scpNA$Cell.Type)
+prot_sensitivity_summary <- rownames_to_column(prot_sensitivity_summary, var = "Cell.Type")
+
+
+
+p1 <- ggplot(prot_sensitivity_summary, aes(x = Completeness, y = LocalSensitivityMean, color = Cell.Type, size = NumberCells)) +
+        geom_point() +
+        geom_linerange(aes(ymin = LocalSensitivityMean - LocalSensitivitySd, ymax = LocalSensitivityMean + LocalSensitivitySd), size = 1) +
+        scale_color_manual("Population",
+                        values = c("#6aa84f", "#d98e47", "#3d85c6", "#bf63bf", "#e89691",
+                                    "#FF1493", "#20B2AA", "#FF4500", "#b3cde0", "#006666", "#a7adba", "#FF69B4"),
+                        guide = "none") +
+        labs(x = "Completeness [%]", y = "Average protein features per Population", size = "Number of replicates", color = "Population") +
+        theme_minimal()
+  
+
+#Evaluate similarity/consistency of identifications across celltypes
+ji_prot <- jaccardIndex(scpNA, "prot_id", by = scpNA$Cell.Type)
+
+medians <- ji_prot %>%
+  group_by(by) %>%
+  summarise(median = median(jaccard))
+
+p2 <- ggplot(ji_prot, aes(x = jaccard, fill = by)) +
+  geom_histogram(alpha = 0.7) +
+  geom_vline(data = medians, aes(xintercept = median), linetype = "dashed", color = "#5b5b5b") +
+  geom_text_repel(data = medians, aes(x = median, y = 0, label = paste("Median:", round(median, 2))), nudge_y = 0.5) +  
+  facet_grid(by ~ ., scales = "free_y") +
+  scale_fill_manual("Population",
+                    values = c("#6aa84f", "#d98e47", "#3d85c6", "#bf63bf", "#e89691",
+                                "#FF1493", "#20B2AA", "#FF4500", "#b3cde0", "#006666", "#a7adba", "#FF69B4")) +
+  labs(x = "Jaccard Index", y = "Count") +
+  theme_minimal() +
+  theme(strip.text = element_blank())
+
+
+csc_prot <- cumulativeSensitivityCurve(scpNA, "prot_id", by = scpNA$sample,
+                                  niters = 10, 
+                                  nsteps = max(36))
+
+pCSC_prot <- ggplot(csc_prot) +
+  aes(x = SampleSize, y = Sensitivity) +
+  geom_point(size = 3, alpha = 0.7, color = "#005b96") +
+  labs(x = "Number of cells", y = "Sensitivity") +
+  theme_minimal() 
+
+predCSC_prot <- predictSensitivity(csc_prot, nSample = 1:length(unique(csc_prot$SampleSize)))
+
+#Add the maximal predicted sensitivity to the plot
+prot_maxSensitivity <- predictSensitivity(csc_prot, nSamples = Inf)
+
+prot_maxSensitivity <- prot_maxSensitivity %>%
+  dplyr::select(-SampleSize) %>%
+  rename(CellType = by, "Max. predicted sensitivity" = Sensitivity) %>%
+  dplyr::select(CellType, "Max. predicted sensitivity", everything()) %>%
+  mutate(CellType = "hBM")
+
+
+p3 <- pCSC_prot + 
+        geom_line(data = predCSC_prot, color = "#ffad60", size = 1.5) +
+        geom_table(data = prot_maxSensitivity, 
+                  aes(x = Inf, y = -Inf, label = list(prot_maxSensitivity)), 
+                  hjust = 1, vjust = 0) +
+                  theme(legend.position = "none") 
+```
+
+# Peptide centric normalization and imputation 
+```{r}
+#We also remove peptides that contain to many missing values to work with  
+scp <- filterNA(scp,
+                i = "Peptides",
+                pNA = 0.99)
+
+#We will normalize the data by apply a median shift of the total intensity across cells, as implemented in the scanpy
+sf <- colSums(assay(scp, "Peptides"), na.rm = TRUE)
+sf <- sf / median(sf)
+scp <- sweep(scp, MARGIN = 2, STATS = sf, FUN = "/",
+              i = "Peptides", name = "Peptides_norm")
+
+#We perform the log transformation after normalizeing the data
+scp <- logTransform(scp, i = "Peptides_norm", name = "peptides_log")
+# Impute missing values using KNN
+# alternatively: imputeKnnSCoPE2(object, i, name = "KNNimputedAssay", k = 3) 
+scp <- impute(scp,
+              i = "peptides_log",
+              method = "knn",
+              k = 3, rowmax = 1, colmax= 1,
+              maxp = Inf, rng.seed = 1234, name = "Peptides_imp")
+
+```
+
+## Protein aggregation and normalisation
+```{r}
+#This function calculates the robust summarisation for each feature (protein).
+#Note that the function assumes that the intensities in input e are already log-transformed.
+scp <- aggregateFeatures(scp, "Peptides_imp", "PG.ProteinAccessions", name = "Proteins", fun = MsCoreUtils::robustSummary) #Check if this is ok
+#scp <- aggregateFeatures(scp,  "Peptides_imp", "PG.ProteinAccessions", name = "Proteins_med", fun = colMedians) #Check if this is ok
+
+#We now perform centering followed by scalling of the data to unit variance
+means <- rowMeans(assay(scp, "Proteins"))
+scp <- sweep(scp, MARGIN = 1, STATS = means, FUN = "-",
+             i = "Proteins", name = "Proteins_centered")
+stds <- rowSds(assay(scp, "Proteins_centered"))
+scp <- sweep(scp, MARGIN = 1, STATS = stds, FUN = "/",
+             i = "Proteins_centered", name = "Proteins_scaled")
+            
+scp[["Proteins"]]
+plot(scp, interactive = TRUE) 
+```
+
+# Dimentionality reduction
+```{r}
+sce <- getWithColData(scp, "Proteins_scaled")
+t <- assay(sce) |> as.matrix() |> as_tibble(rownames="features")
+t$PG.Genes <- rowData(sce)$PG.Genes
+write.csv(t, "Proteins_scaled.csv")
+
+#Calculare principal components
+sce <- runPCA(sce,
+              ncomponents = 5,
+              ntop = Inf,
+              scale = FALSE,
+              exprs_values = 1,
+              name = "PCA")
+
+pca_results <- reducedDims(sce)$PCA
+varExplained <- attr(pca_results, "varExplained")
+rotation <- attr(pca_results, "rotation") #Stores loadings
+
+#Plot PCA
+plotPCA(sce, colour_by = "Cell.Type")
+#Inspect variance in other components
+plotReducedDim(sce, dimred="PCA", ncomponents=4, colour_by="Cell.Type")
+
+df_PCA <- data.frame(colData(sce), PCA = reducedDim(sce, "PCA"))
+
+pca <- ggplot(df_PCA, aes(x = PCA.PC1, y = PCA.PC2, color = Cell.Type)) + 
+      geom_point(alpha = 0.7, size = 3) +
+      theme_minimal() +
+      labs(x = "PC1 (13 %)", y = "PC2 (7 %)") +
+      scale_color_manual("Population",
+                        values = c("#6aa84f", "#d98e47", "#3d85c6", "#bf63bf", "#e89691",
+                                    "#FF1493", "#20B2AA", "#FF4500", "#b3cde0", "#006666", "#a7adba", "#FF69B4")) 
+
+
+
+report <- (summary_sats | p1 | pca) / p3 + plot_annotation(tag_levels = 'A') + plot_layout(guides = 'collect')
+ggsave("Figures/report.pdf", report, width = 12, height = 10, dpi = 300)
+```

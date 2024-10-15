@@ -1,0 +1,877 @@
+---
+title: "HTS July 2024"
+output: html_document
+date: "2024-07-09"
+---
+
+#Libraries
+```{r}
+install.packages("drc")
+
+library(readxl)
+library(tidyverse)
+library(patchwork)
+library(ggplot2)
+library(drc)
+library(RColorBrewer)
+library(patchwork)
+library(broom)
+library(gridExtra)
+options(scipen = 999)
+```
+
+#DAY 1
+```{r}
+flowjo.table_D1 <- read_excel("/Volumes/bio/MBT-g-Cell-Diversity-Lab/Kathrine/Kathrine Folder/HTS_July_2024/HTS_July_TCd_D3.xls", sheet = 1)
+col.names <- c("Sample", "viable.cells", "CD38.pos", "CD38.neg", "LSC", "Progenitors")
+colnames(flowjo.table_D1) <- col.names
+
+#Read the CSV file containing drug and well information
+plate_layout <- read.csv2("/Volumes/bio/MBT-g-Cell-Diversity-Lab/Kathrine/Kathrine Folder/HTS_July_2024/BzClLayout_correct1.csv")
+
+# Use unique combinations of well identifiers and drug names to handle duplicates
+plate_layout_unique <- plate_layout[!duplicated(plate_layout$Well), ]
+well_to_drug <- setNames(plate_layout_unique$Drug, plate_layout_unique$Well)
+
+# Extract the correct well identifiers from the Sample column
+extract_well <- function(sample_name) {
+  parts <- unlist(strsplit(sample_name, "_"))
+  well <- parts[length(parts) - 2]  # Get the second-to-last part
+  sub("^0+", "", well)  # Remove leading zeros
+}
+
+# Apply the function to create a new column with well identifiers
+flowjo.table_D1$Sample <- sapply(flowjo.table_D1$Sample, extract_well)
+
+# Map the well identifiers to drug names
+flowjo.table_D1 <- flowjo.table_D1[-c(73, 74), ]
+flowjo.table_D1$Sample <- as.character(flowjo.table_D1$Sample)
+flowjo.table_D1$Cmpd <- well_to_drug[flowjo.table_D1$Sample]
+
+
+# Identify the wells that contain "DMSO" and add to DMSO.ctrls
+DMSO_wells <- plate_layout$Drug[plate_layout$Drug == "DMSO"]
+DMSO.ctrls <- flowjo.table_D1[flowjo.table_D1$Cmpd %in% DMSO_wells, ]
+
+# Identify the wells that contain "BzCl" and add to BzCl.ctrls
+BzCl_wells <- plate_layout$Drug[plate_layout$Drug == "BzCl"]
+BzCl.ctrls <- flowjo.table_D1[flowjo.table_D1$Cmpd %in% BzCl_wells, ]
+
+# Remove DMSO and BzCl samples from flowjo.table
+flowjo.table_D1 <- anti_join(flowjo.table_D1, DMSO.ctrls, by = "Sample")
+flowjo.table_D1 <- anti_join(flowjo.table_D1, BzCl.ctrls, by = "Sample")
+
+#Define drugs and consentrations
+flowjo.table_D1$Cmpd <- gsub(" Aza.1000nM", " 1000nM Aza+Ven", flowjo.table_D1$Cmpd)
+
+
+split_cmpd <- strsplit(flowjo.table_D1$Cmpd, "\\.")
+
+# Extract compound and concentration
+flowjo.table_D1$Cmpd <- sapply(split_cmpd, function(x) x[1])
+flowjo.table_D1$cmpd.conc <- sapply(split_cmpd, function(x) {
+  if (length(x) > 1) {
+    x[2]
+  } else {
+    NA  # Handle cases where there's no concentration specified
+  }
+})
+
+#Correct the combination treatment notation
+replace_indices <- grepl("1000nM Aza\\+Ven", flowjo.table_D1$cmpd.conc)
+flowjo.table_D1$Cmpd[grepl("1000nM Aza\\+Ven", flowjo.table_D1$cmpd.conc)] <- "1000nM Aza+Ven"
+flowjo.table_D1$cmpd.conc[replace_indices] <- gsub("1000nM Aza\\+Ven", "", flowjo.table_D1$cmpd.conc[replace_indices])
+flowjo.table_D1$cmpd.conc <- trimws(flowjo.table_D1$cmpd.conc)
+
+# Replace "01" with "0.1" in cmpd.conc
+flowjo.table_D1$cmpd.conc <- gsub("01nM", "0.1", flowjo.table_D1$cmpd.conc)
+
+# Remove nM in cmpd.conc
+flowjo.table_D1$cmpd.conc <- gsub("nM", "", flowjo.table_D1$cmpd.conc)
+
+#Make the cmpd.conc column numeric
+flowjo.table_D1$cmpd.conc <- as.numeric(flowjo.table_D1$cmpd.conc)
+
+#Average the DMSO controls
+UT.ctrl <- DMSO.ctrls %>%
+  filter(!str_detect(Sample, "B5")) %>%
+  summarise(across(everything(), mean, na.rm = TRUE))
+
+IC.50_D1 <- flowjo.table_D1 %>%
+  group_by(Cmpd) %>%
+  mutate(
+    CD38.pos = (CD38.pos/UT.ctrl$CD38.pos)*100,
+    CD38.neg = (CD38.neg/UT.ctrl$CD38.neg)*100,
+    LSC = (LSC/UT.ctrl$LSC)*100,
+    Progenitors = (Progenitors/UT.ctrl$Progenitors)*100,
+    viable.cells = (viable.cells/UT.ctrl$viable.cells)*100) %>%
+  ungroup()
+
+#IC.50_D1 <- IC.50_D1 %>%
+  #filter(!str_detect(Sample, "H6|A7|A2|E3")) 
+
+#remove outliers
+grouped <- split(IC.50_D1, list(IC.50_D1$Cmpd, IC.50_D1$cmpd.conc))
+
+
+filter_outliers <- function(df) {
+  if (nrow(df) < 3) return(df)  # Return unchanged if less than 3 rows
+  
+  # Calculate median and IQR
+  median_value <- median(df$viable.cells)
+  iqr_value <- IQR(df$viable.cells)
+  
+  # Define lower and upper bounds for outliers
+  lower_bound <- median_value - 1.5 * iqr_value
+  upper_bound <- median_value + 1.5 * iqr_value
+  
+  # Filter outliers
+  df_filtered <- df[df$viable.cells >= lower_bound & df$viable.cells <= upper_bound, , drop = FALSE]
+  
+  return(df_filtered)
+}
+
+# Step 3: Apply the filter_outliers function to each group
+filtered_groups <- lapply(grouped, filter_outliers)
+
+# Step 4: Combine filtered groups back into a single data frame
+filtered_IC.50_D1 <- do.call(rbind, filtered_groups)
+
+#Apply the filter_outliers function to each group
+filtered_groups <- lapply(grouped, filter_outliers)
+
+#Combine filtered groups back into a single data frame
+filtered_IC.50_D1 <- do.call(rbind, filtered_groups)
+
+#filtered_IC.50_D1 <- IC.50_D1
+
+
+#Calculate IC50 values for each condition and cell type inc. all cells
+IC.50.long_D1 <- filtered_IC.50_D1 %>% 
+  gather(key = "Cell.Type", value = "Viability.percentage", 2:6)
+  
+cmpd.values <- unique(IC.50.long_D1$Cmpd)
+cell.type.values <- unique(IC.50.long_D1$Cell.Type)
+
+IC50.list_D1 <- list()
+for (cmpd in cmpd.values) {
+  for (cell_type in cell.type.values) {
+
+    filtered_data_D1 <- IC.50.long_D1 %>%
+      filter(Cmpd == cmpd, Cell.Type == cell_type)
+    
+    if (nrow(filtered_data_D1) > 0) {  
+      
+      fitted_curve_D1 <- drm(formula = Viability.percentage ~ cmpd.conc,
+                          data = filtered_data_D1,
+                          fct = LL.4())
+      
+      Einf <- fitted_curve_D1$coefficients[2]
+      E0 <- fitted_curve_D1$coefficients[3]
+      EC50 <- fitted_curve_D1$coefficients[4]
+      H <-  fitted_curve_D1$coefficients[1]
+      IC50 <- exp(log((((Einf - E0) / (50 - E0)) - 1) * EC50**(-H)) / (-H))
+      
+      efficacy_metrics <- data.frame(c(E0, Einf, EC50, H, IC50))
+      rownames(efficacy_metrics) <- c('E0', 'Einf', 'EC50', 'H', 'IC50')
+      colnames(efficacy_metrics) <- 'Value'
+      
+      # Store the results in a list
+      IC50.list_D1[[paste(cmpd, cell_type, sep = "-->")]] <- efficacy_metrics
+    }
+  }
+}
+
+#Extracte IC50 values only for the viable cells
+IC50.all.cells_D1 <- data.frame(Cmpd = character(0), IC50 = numeric(0))
+for (key in names(IC50.list_D1)) {
+  if (grepl("viable.cells", key)) {
+    cmpd <- sub("-->viable.cells", "", key)  # Extract the Cmpd name
+    ic50_value <- IC50.list_D1[[key]]["IC50", "Value"]
+    IC50.all.cells_D1 <- rbind(IC50.all.cells_D1, data.frame(Cmpd = cmpd, IC50 = ic50_value))
+  }
+}
+
+IC50_annotation_data <- data.frame(
+  Cmpd = IC50.all.cells_D1$Cmpd,
+  IC50 = IC50.all.cells_D1$IC50,
+  label = ifelse(is.na(IC50.all.cells_D1$IC50), "IC50 = NA",
+                 ifelse(IC50.all.cells_D1$IC50 > 10^6, "IC50 = NA", paste("IC50 =", round(IC50.all.cells_D1$IC50, 2)))
+  )
+)
+
+
+#Compound.names <- c("Venetoclax + 1000nM Aza", "Venetoclax", "Azacitidine")
+
+plots_list <- lapply(unique(filtered_IC.50_D1$Cmpd), function(cmpd_group) {
+  subset_data <- filter(filtered_IC.50_D1, Cmpd == cmpd_group)
+ 
+   p <- ggplot(subset_data, aes(x = cmpd.conc)) +
+    geom_point(aes(y = CD38.neg, color = "CD38 Negative"), shape = 19) +
+    geom_point(aes(y = CD38.pos, color = "CD38 Positive"), shape = 19) +
+    geom_point(aes(y = LSC, color = "LSC"), shape = 19) +
+    geom_point(aes(y = Progenitors, color = "Progenitors"), shape = 19) +
+    geom_point(aes(y = viable.cells, color = "Total viable cells"), shape = 19) +
+    geom_smooth(aes(y = CD38.neg), color = "#9bc6eb", method = drm, method.args = list(fct = L.4()), se = FALSE) +
+    geom_smooth(aes(y = CD38.pos), color = "#eea0a6", se = FALSE, method = drm, method.args = list(fct = L.4())) +
+    geom_smooth(aes(y = LSC), color = "#a6efa2", se = FALSE, method = drm, method.args = list(fct = L.4())) +
+    geom_smooth(aes(y = Progenitors), color = "#a798cb", se = FALSE, method = drm, method.args = list(fct = L.4())) +
+    geom_smooth(aes(y = viable.cells), color = "black", se = FALSE, method = drm, method.args = list(fct = L.4()), linetype = "dashed")+
+    scale_x_log10() +
+    xlab("Dose [nM]") +
+    ylab("Relative Cell Count [%]") +
+    scale_color_manual(values = c("CD38 Negative" = "#3391df", "CD38 Positive" = "#d04a54",
+                                   "LSC" = "#53ca4d", "Progenitors" = "#64548a", "Total viable cells" = "black")) +
+    scale_y_continuous(limits = c(0, 150), breaks = seq(0, 150, 50)) +
+    theme_bw() +
+    geom_text(data = IC50_annotation_data[IC50_annotation_data$Cmpd == cmpd_group, ],
+              aes(x = max(subset_data$cmpd.conc), y = 150, label = label),
+             hjust = 1,
+              size = 5, color = "black",
+              fontface = "bold") +
+    labs(title = cmpd_group, color = "Cell Type") +
+     theme(plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),
+          axis.text = element_text(size = 12),         # Change size of axis numbers
+          axis.title = element_text(size = 14),
+          legend.text = element_text(size = 16),       # Change size of legend text
+          legend.title = element_text(size = 16)  )
+
+  return(p)
+})
+
+wrap_plots(plots_list, nrow = 1) +
+  plot_layout(guides = "collect")
+
+ggsave(
+   filename = "/Users/kathrinekaas/Dropbox/CDL/HTS_July_2024/Plots/July_IC50_Day1.pdf",
+   device = "pdf",
+   width = 20,
+   height = 5)
+
+plots_list <- lapply(unique(filtered_IC.50_D1$Cmpd), function(cmpd_group) {
+  subset_data <- filter(filtered_IC.50_D1, Cmpd == cmpd_group)
+
+  # Calculate means and standard deviations
+  summary_data <- subset_data %>%
+    group_by(cmpd.conc) %>%
+    summarise(
+      CD38.neg.mean = mean(CD38.neg), CD38.neg.sd = sd(CD38.neg),
+      CD38.pos.mean = mean(CD38.pos), CD38.pos.sd = sd(CD38.pos),
+      LSC.mean = mean(LSC), LSC.sd = sd(LSC),
+      Progenitors.mean = mean(Progenitors), Progenitors.sd = sd(Progenitors),
+      viable.cells.mean = mean(viable.cells), viable.cells.sd = sd(viable.cells)
+    )
+
+  p <- ggplot(summary_data, aes(x = cmpd.conc)) +
+    #geom_errorbar(aes(ymin = CD38.neg.mean - CD38.neg.sd, ymax = CD38.neg.mean + CD38.neg.sd, color = "CD38 Negative"), width = 0.2) +
+    geom_line(aes(y = CD38.neg.mean, color = "CD38 Negative"), size = 1.2) +
+    #geom_errorbar(aes(ymin = CD38.pos.mean - CD38.pos.sd, ymax = CD38.pos.mean + CD38.pos.sd, color = "CD38 Positive"), width = 0.2) +
+    geom_line(aes(y = CD38.pos.mean, color = "CD38 Positive"), size = 1.2) +
+    #geom_errorbar(aes(ymin = LSC.mean - LSC.sd, ymax = LSC.mean + LSC.sd, color = "LSC"), width = 0.2) +
+    geom_line(aes(y = LSC.mean, color = "LSC"), size = 1.2) +
+    #geom_errorbar(aes(ymin = Progenitors.mean - Progenitors.sd, ymax = Progenitors.mean + Progenitors.sd, color = "Progenitors"), width = 0.2) +
+    geom_line(aes(y = Progenitors.mean, color = "Progenitors"), size = 1.2) +
+    geom_errorbar(aes(ymin = viable.cells.mean - viable.cells.sd, ymax = viable.cells.mean + viable.cells.sd, color = "Total viable cells"), width = 0.2, size = 0.6) +
+    geom_line(aes(y = viable.cells.mean, color = "Total viable cells"), size = 2.2) +
+    scale_x_log10() +
+    xlab("Dose [nM]") +
+    ylab("Relative Cell Count [%]") +
+    scale_y_continuous(limits = c(0, 150), breaks = seq(0, 150, 50)) +
+    scale_color_manual(values = c("CD38 Negative" = "#3391df", "CD38 Positive" = "#d04a54",
+                                  "LSC" = "#53ca4d", "Progenitors" = "#64548a", "Total viable cells" = "black")) +
+    theme_bw() +
+    geom_text(data = IC50_annotation_data[IC50_annotation_data$Cmpd == cmpd_group, ],
+              aes(x = max(subset_data$cmpd.conc), y = 150, label = label),
+              hjust = 1, hjust = 0.5,
+              size = 5, color = "black",
+              fontface = "bold") +
+    labs(title = cmpd_group, color = "Cell Type") +
+    theme(plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),
+          axis.text = element_text(size = 12),         # Change size of axis numbers
+          axis.title = element_text(size = 14),
+          legend.text = element_text(size = 16),       # Change size of legend text
+  legend.title = element_text(size = 16)  )
+
+  return(p)
+})
+
+wrap_plots(plots_list, nrow = 1) +
+  plot_layout(guides = "collect")
+
+ggsave(
+   filename = "/Users/kathrinekaas/Dropbox/CDL/HTS_July_2024/Plots/July_IC50_Day1_Std.pdf",
+   device = "pdf",
+   width = 20,
+   height = 5)
+```
+
+
+#DAY 2
+```{r}
+flowjo.table_D1 <- read_excel("/Users/kathrinekaas/Dropbox/CDL/HTS_July_2024/HTS_July_2024_D2.xls", sheet = 1)
+col.names <- c("Sample", "viable.cells", "CD38.pos", "Progenitors", "LSC", "CD38.neg")
+colnames(flowjo.table_D1) <- col.names
+
+#Read the CSV file containing drug and well information
+plate_layout <- read.csv2("/Users/kathrinekaas/Dropbox/CDL/HTS_July_2024/BzClLayout_correct1.csv")
+
+# Use unique combinations of well identifiers and drug names to handle duplicates
+plate_layout_unique <- plate_layout[!duplicated(plate_layout$Well), ]
+well_to_drug <- setNames(plate_layout_unique$Drug, plate_layout_unique$Well)
+
+# Extract the correct well identifiers from the Sample column
+extract_well <- function(sample_name) {
+  parts <- unlist(strsplit(sample_name, "_"))
+  well <- parts[length(parts) - 2]  # Get the second-to-last part
+  sub("^0+", "", well)  # Remove leading zeros
+}
+
+# Apply the function to create a new column with well identifiers
+flowjo.table_D1$Sample <- sapply(flowjo.table_D1$Sample, extract_well)
+
+# Map the well identifiers to drug names
+flowjo.table_D1$Cmpd <- well_to_drug[flowjo.table_D1$Sample]
+
+
+# Identify the wells that contain "DMSO" and add to DMSO.ctrls
+DMSO_wells <- plate_layout$Drug[plate_layout$Drug == "DMSO"]
+DMSO.ctrls <- flowjo.table_D1[flowjo.table_D1$Cmpd %in% DMSO_wells, ]
+
+# Identify the wells that contain "BzCl" and add to BzCl.ctrls
+BzCl_wells <- plate_layout$Drug[plate_layout$Drug == "BzCl"]
+BzCl.ctrls <- flowjo.table_D1[flowjo.table_D1$Cmpd %in% BzCl_wells, ]
+
+# Remove DMSO and BzCl samples from flowjo.table
+flowjo.table_D1 <- anti_join(flowjo.table_D1, DMSO.ctrls, by = "Sample")
+flowjo.table_D1 <- anti_join(flowjo.table_D1, BzCl.ctrls, by = "Sample")
+
+#Define drugs and consentrations
+flowjo.table_D1$Cmpd <- gsub(" Aza.1000nM", " 1000nM Aza+Ven", flowjo.table_D1$Cmpd)
+
+
+split_cmpd <- strsplit(flowjo.table_D1$Cmpd, "\\.")
+
+# Extract compound and concentration
+flowjo.table_D1$Cmpd <- sapply(split_cmpd, function(x) x[1])
+flowjo.table_D1$cmpd.conc <- sapply(split_cmpd, function(x) {
+  if (length(x) > 1) {
+    x[2]
+  } else {
+    NA  # Handle cases where there's no concentration specified
+  }
+})
+
+#Correct the combination treatment notation
+replace_indices <- grepl("1000nM Aza\\+Ven", flowjo.table_D1$cmpd.conc)
+flowjo.table_D1$Cmpd[grepl("1000nM Aza\\+Ven", flowjo.table_D1$cmpd.conc)] <- "1000nM Aza+Ven"
+flowjo.table_D1$cmpd.conc[replace_indices] <- gsub("1000nM Aza\\+Ven", "", flowjo.table_D1$cmpd.conc[replace_indices])
+flowjo.table_D1$cmpd.conc <- trimws(flowjo.table_D1$cmpd.conc)
+
+# Replace "01" with "0.1" in cmpd.conc
+flowjo.table_D1$cmpd.conc <- gsub("01nM", "0.1", flowjo.table_D1$cmpd.conc)
+
+# Remove nM in cmpd.conc
+flowjo.table_D1$cmpd.conc <- gsub("nM", "", flowjo.table_D1$cmpd.conc)
+
+#Make the cmpd.conc column numeric
+flowjo.table_D1$cmpd.conc <- as.numeric(flowjo.table_D1$cmpd.conc)
+
+#Average the DMSO controls
+UT.ctrl <- DMSO.ctrls %>%
+  filter(!str_detect(Sample, "D5|H4")) %>%
+  summarise(across(everything(), mean, na.rm = TRUE))
+
+IC.50_D1 <- flowjo.table_D1 %>%
+  group_by(Cmpd) %>%
+  mutate(
+    CD38.pos = (CD38.pos/UT.ctrl$CD38.pos)*100,
+    CD38.neg = (CD38.neg/UT.ctrl$CD38.neg)*100,
+    LSC = (LSC/UT.ctrl$LSC)*100,
+    Progenitors = (Progenitors/UT.ctrl$Progenitors)*100,
+    viable.cells = (viable.cells/UT.ctrl$viable.cells)*100) %>%
+  ungroup()
+
+#IC.50_D1 <- IC.50_D1 %>%
+  #filter(!str_detect(Sample, "H6|A7|A2|E3")) 
+
+#remove outliers
+grouped <- split(IC.50_D1, list(IC.50_D1$Cmpd, IC.50_D1$cmpd.conc))
+
+
+filter_outliers <- function(df) {
+  if (nrow(df) < 3) return(df)  # Return unchanged if less than 3 rows
+  
+  # Calculate median and IQR
+  median_value <- median(df$viable.cells)
+  iqr_value <- IQR(df$viable.cells)
+  
+  # Define lower and upper bounds for outliers
+  lower_bound <- median_value - 1.5 * iqr_value
+  upper_bound <- median_value + 1.5 * iqr_value
+  
+  # Filter outliers
+  df_filtered <- df[df$viable.cells >= lower_bound & df$viable.cells <= upper_bound, , drop = FALSE]
+  
+  return(df_filtered)
+}
+
+# Step 3: Apply the filter_outliers function to each group
+filtered_groups <- lapply(grouped, filter_outliers)
+
+# Step 4: Combine filtered groups back into a single data frame
+filtered_IC.50_D1 <- do.call(rbind, filtered_groups)
+
+#Apply the filter_outliers function to each group
+filtered_groups <- lapply(grouped, filter_outliers)
+
+#Combine filtered groups back into a single data frame
+filtered_IC.50_D1 <- do.call(rbind, filtered_groups)
+
+#filtered_IC.50_D1 <- IC.50_D1
+
+
+#Calculate IC50 values for each condition and cell type inc. all cells
+IC.50.long_D1 <- filtered_IC.50_D1 %>% 
+  gather(key = "Cell.Type", value = "Viability.percentage", 2:6)
+  
+
+cmpd.values <- unique(IC.50.long_D1$Cmpd)
+cell.type.values <- unique(IC.50.long_D1$Cell.Type)
+
+IC50.list_D1 <- list()
+for (cmpd in cmpd.values) {
+  for (cell_type in cell.type.values) {
+
+    filtered_data_D1 <- IC.50.long_D1 %>%
+      filter(Cmpd == cmpd, Cell.Type == cell_type)
+    
+    if (nrow(filtered_data_D1) > 0) {  
+      
+      fitted_curve_D1 <- drm(formula = Viability.percentage ~ cmpd.conc,
+                          data = filtered_data_D1,
+                          fct = LL.4())
+      
+      Einf <- fitted_curve_D1$coefficients[2]
+      E0 <- fitted_curve_D1$coefficients[3]
+      EC50 <- fitted_curve_D1$coefficients[4]
+      H <-  fitted_curve_D1$coefficients[1]
+      IC50 <- exp(log((((Einf - E0) / (50 - E0)) - 1) * EC50**(-H)) / (-H))
+      
+      efficacy_metrics <- data.frame(c(E0, Einf, EC50, H, IC50))
+      rownames(efficacy_metrics) <- c('E0', 'Einf', 'EC50', 'H', 'IC50')
+      colnames(efficacy_metrics) <- 'Value'
+      
+      # Store the results in a list
+      IC50.list_D1[[paste(cmpd, cell_type, sep = "-->")]] <- efficacy_metrics
+    }
+  }
+}
+
+#Extracte IC50 values only for the viable cells
+IC50.all.cells_D1 <- data.frame(Cmpd = character(0), IC50 = numeric(0))
+for (key in names(IC50.list_D1)) {
+  if (grepl("viable.cells", key)) {
+    cmpd <- sub("-->viable.cells", "", key)  # Extract the Cmpd name
+    ic50_value <- IC50.list_D1[[key]]["IC50", "Value"]
+    IC50.all.cells_D1 <- rbind(IC50.all.cells_D1, data.frame(Cmpd = cmpd, IC50 = ic50_value))
+  }
+}
+
+IC50_annotation_data <- data.frame(
+  Cmpd = IC50.all.cells_D1$Cmpd,
+  IC50 = IC50.all.cells_D1$IC50,
+  label = ifelse(is.na(IC50.all.cells_D1$IC50), "IC50 = NA",
+                 ifelse(IC50.all.cells_D1$IC50 > 10^6, "IC50 = NA", paste("IC50 =", round(IC50.all.cells_D1$IC50, 2)))
+  )
+)
+
+
+#Compound.names <- c("Venetoclax + 1000nM Aza", "Venetoclax", "Azacitidine")
+
+plots_list <- lapply(unique(filtered_IC.50_D1$Cmpd), function(cmpd_group) {
+  subset_data <- filter(filtered_IC.50_D1, Cmpd == cmpd_group)
+ 
+   p <- ggplot(subset_data, aes(x = cmpd.conc)) +
+    geom_point(aes(y = CD38.neg, color = "CD38 Negative"), shape = 19) +
+    geom_point(aes(y = CD38.pos, color = "CD38 Positive"), shape = 19) +
+    geom_point(aes(y = LSC, color = "LSC"), shape = 19) +
+    geom_point(aes(y = Progenitors, color = "Progenitors"), shape = 19) +
+    geom_point(aes(y = viable.cells, color = "Total viable cells"), shape = 19) +
+    geom_smooth(aes(y = CD38.neg), color = "#9bc6eb", method = drm, method.args = list(fct = L.4()), se = FALSE) +
+    geom_smooth(aes(y = CD38.pos), color = "#eea0a6", se = FALSE, method = drm, method.args = list(fct = L.4())) +
+    geom_smooth(aes(y = LSC), color = "#a6efa2", se = FALSE, method = drm, method.args = list(fct = L.4())) +
+    geom_smooth(aes(y = Progenitors), color = "#a798cb", se = FALSE, method = drm, method.args = list(fct = L.4())) +
+    geom_smooth(aes(y = viable.cells), color = "black", se = FALSE, method = drm, method.args = list(fct = L.4()), linetype = "dashed")+
+    scale_x_log10() +
+    xlab("Dose [nM]") +
+    ylab("Relative Cell Count [%]") +
+    scale_color_manual(values = c("CD38 Negative" = "#3391df", "CD38 Positive" = "#d04a54",
+                                   "LSC" = "#53ca4d", "Progenitors" = "#64548a", "Total viable cells" = "black")) +
+    scale_y_continuous(limits = c(0, 150), breaks = seq(0, 150, 50)) +
+    theme_bw() +
+    geom_text(data = IC50_annotation_data[IC50_annotation_data$Cmpd == cmpd_group, ],
+              aes(x = max(subset_data$cmpd.conc), y = 150, label = label),
+             hjust = 1,
+              size = 5, color = "black",
+              fontface = "bold") +
+    labs(title = cmpd_group, color = "Cell Type") +
+     theme(plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),
+          axis.text = element_text(size = 12),         # Change size of axis numbers
+          axis.title = element_text(size = 14),
+          legend.text = element_text(size = 16),       # Change size of legend text
+          legend.title = element_text(size = 16)  )
+
+  return(p)
+})
+
+wrap_plots(plots_list, nrow = 1) +
+  plot_layout(guides = "collect")
+
+ggsave(
+   filename = "/Users/kathrinekaas/Dropbox/CDL/HTS_July_2024/Plots/July_IC50_Day2.pdf",
+   device = "pdf",
+   width = 20,
+   height = 5)
+
+plots_list <- lapply(unique(filtered_IC.50_D1$Cmpd), function(cmpd_group) {
+  subset_data <- filter(filtered_IC.50_D1, Cmpd == cmpd_group)
+
+  # Calculate means and standard deviations
+  summary_data <- subset_data %>%
+    group_by(cmpd.conc) %>%
+    summarise(
+      CD38.neg.mean = mean(CD38.neg), CD38.neg.sd = sd(CD38.neg),
+      CD38.pos.mean = mean(CD38.pos), CD38.pos.sd = sd(CD38.pos),
+      LSC.mean = mean(LSC), LSC.sd = sd(LSC),
+      Progenitors.mean = mean(Progenitors), Progenitors.sd = sd(Progenitors),
+      viable.cells.mean = mean(viable.cells), viable.cells.sd = sd(viable.cells)
+    )
+
+  p <- ggplot(summary_data, aes(x = cmpd.conc)) +
+    #geom_errorbar(aes(ymin = CD38.neg.mean - CD38.neg.sd, ymax = CD38.neg.mean + CD38.neg.sd, color = "CD38 Negative"), width = 0.2) +
+    geom_line(aes(y = CD38.neg.mean, color = "CD38 Negative"), size = 1.2) +
+    #geom_errorbar(aes(ymin = CD38.pos.mean - CD38.pos.sd, ymax = CD38.pos.mean + CD38.pos.sd, color = "CD38 Positive"), width = 0.2) +
+    geom_line(aes(y = CD38.pos.mean, color = "CD38 Positive"), size = 1.2) +
+    #geom_errorbar(aes(ymin = LSC.mean - LSC.sd, ymax = LSC.mean + LSC.sd, color = "LSC"), width = 0.2) +
+    geom_line(aes(y = LSC.mean, color = "LSC"), size = 1.2) +
+    #geom_errorbar(aes(ymin = Progenitors.mean - Progenitors.sd, ymax = Progenitors.mean + Progenitors.sd, color = "Progenitors"), width = 0.2) +
+    geom_line(aes(y = Progenitors.mean, color = "Progenitors"), size = 1.2) +
+    geom_errorbar(aes(ymin = viable.cells.mean - viable.cells.sd, ymax = viable.cells.mean + viable.cells.sd, color = "Total viable cells"), width = 0.2, size = 0.6) +
+    geom_line(aes(y = viable.cells.mean, color = "Total viable cells"), size = 2.2) +
+    scale_x_log10() +
+    xlab("Dose [nM]") +
+    ylab("Relative Cell Count [%]") +
+    scale_y_continuous(limits = c(0, 150), breaks = seq(0, 150, 50)) +
+    scale_color_manual(values = c("CD38 Negative" = "#3391df", "CD38 Positive" = "#d04a54",
+                                  "LSC" = "#53ca4d", "Progenitors" = "#64548a", "Total viable cells" = "black")) +
+    theme_bw() +
+    geom_text(data = IC50_annotation_data[IC50_annotation_data$Cmpd == cmpd_group, ],
+              aes(x = max(subset_data$cmpd.conc), y = 150, label = label),
+              hjust = 1, hjust = 0.5,
+              size = 5, color = "black",
+              fontface = "bold") +
+    labs(title = cmpd_group, color = "Cell Type") +
+    theme(plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),
+          axis.text = element_text(size = 12),         # Change size of axis numbers
+          axis.title = element_text(size = 14),
+          legend.text = element_text(size = 16),       # Change size of legend text
+  legend.title = element_text(size = 16)  )
+
+  return(p)
+})
+
+wrap_plots(plots_list, nrow = 1) +
+  plot_layout(guides = "collect")
+
+ggsave(
+   filename = "/Users/kathrinekaas/Dropbox/CDL/HTS_July_2024/Plots/July_IC50_Day2_Std.pdf",
+   device = "pdf",
+   width = 20,
+   height = 5)
+```
+
+
+#DAY 3
+```{r}
+flowjo.table_D1 <- read_excel("/Users/kathrinekaas/Dropbox/CDL/HTS_July_2024/HTS_July_2024_D3.xls", sheet = 1)
+col.names <- c("Sample", "viable.cells", "CD38.pos", "CD38.neg", "LSC", "Progenitors")
+colnames(flowjo.table_D1) <- col.names
+
+#Read the CSV file containing drug and well information
+plate_layout <- read.csv2("/Users/kathrinekaas/Dropbox/CDL/HTS_July_2024/BzClLayout_correct1.csv")
+
+# Use unique combinations of well identifiers and drug names to handle duplicates
+plate_layout_unique <- plate_layout[!duplicated(plate_layout$Well), ]
+well_to_drug <- setNames(plate_layout_unique$Drug, plate_layout_unique$Well)
+
+# Extract the correct well identifiers from the Sample column
+extract_well <- function(sample_name) {
+  parts <- unlist(strsplit(sample_name, "_"))
+  well <- parts[length(parts) - 2]  # Get the second-to-last part
+  sub("^0+", "", well)  # Remove leading zeros
+}
+
+# Apply the function to create a new column with well identifiers
+flowjo.table_D1$Sample <- sapply(flowjo.table_D1$Sample, extract_well)
+
+# Map the well identifiers to drug names
+flowjo.table_D1$Cmpd <- well_to_drug[flowjo.table_D1$Sample]
+
+
+# Identify the wells that contain "DMSO" and add to DMSO.ctrls
+DMSO_wells <- plate_layout$Drug[plate_layout$Drug == "DMSO"]
+DMSO.ctrls <- flowjo.table_D1[flowjo.table_D1$Cmpd %in% DMSO_wells, ]
+
+# Identify the wells that contain "BzCl" and add to BzCl.ctrls
+BzCl_wells <- plate_layout$Drug[plate_layout$Drug == "BzCl"]
+BzCl.ctrls <- flowjo.table_D1[flowjo.table_D1$Cmpd %in% BzCl_wells, ]
+
+# Remove DMSO and BzCl samples from flowjo.table
+flowjo.table_D1 <- anti_join(flowjo.table_D1, DMSO.ctrls, by = "Sample")
+flowjo.table_D1 <- anti_join(flowjo.table_D1, BzCl.ctrls, by = "Sample")
+
+#Define drugs and consentrations
+flowjo.table_D1$Cmpd <- gsub(" Aza.1000nM", " 1000nM Aza+Ven", flowjo.table_D1$Cmpd)
+
+
+split_cmpd <- strsplit(flowjo.table_D1$Cmpd, "\\.")
+
+# Extract compound and concentration
+flowjo.table_D1$Cmpd <- sapply(split_cmpd, function(x) x[1])
+flowjo.table_D1$cmpd.conc <- sapply(split_cmpd, function(x) {
+  if (length(x) > 1) {
+    x[2]
+  } else {
+    NA  # Handle cases where there's no concentration specified
+  }
+})
+
+#Correct the combination treatment notation
+replace_indices <- grepl("1000nM Aza\\+Ven", flowjo.table_D1$cmpd.conc)
+flowjo.table_D1$Cmpd[grepl("1000nM Aza\\+Ven", flowjo.table_D1$cmpd.conc)] <- "1000nM Aza+Ven"
+flowjo.table_D1$cmpd.conc[replace_indices] <- gsub("1000nM Aza\\+Ven", "", flowjo.table_D1$cmpd.conc[replace_indices])
+flowjo.table_D1$cmpd.conc <- trimws(flowjo.table_D1$cmpd.conc)
+
+# Replace "01" with "0.1" in cmpd.conc
+flowjo.table_D1$cmpd.conc <- gsub("01nM", "0.1", flowjo.table_D1$cmpd.conc)
+
+# Remove nM in cmpd.conc
+flowjo.table_D1$cmpd.conc <- gsub("nM", "", flowjo.table_D1$cmpd.conc)
+
+#Make the cmpd.conc column numeric
+flowjo.table_D1$cmpd.conc <- as.numeric(flowjo.table_D1$cmpd.conc)
+
+#Average the DMSO controls
+UT.ctrl <- DMSO.ctrls %>%
+  #filter(!str_detect(Sample, "D5|G5|H4")) %>%
+  summarise(across(everything(), mean, na.rm = TRUE))
+
+IC.50_D1 <- flowjo.table_D1 %>%
+  group_by(Cmpd) %>%
+  mutate(
+    CD38.pos = (CD38.pos/UT.ctrl$CD38.pos)*100,
+    CD38.neg = (CD38.neg/UT.ctrl$CD38.neg)*100,
+    LSC = (LSC/UT.ctrl$LSC)*100,
+    Progenitors = (Progenitors/UT.ctrl$Progenitors)*100,
+    viable.cells = (viable.cells/UT.ctrl$viable.cells)*100) %>%
+  ungroup()
+
+IC.50_D1 <- IC.50_D1 %>%
+  filter(!str_detect(Sample, "C4|C5")) 
+
+#remove outliers
+grouped <- split(IC.50_D1, list(IC.50_D1$Cmpd, IC.50_D1$cmpd.conc))
+
+
+filter_outliers <- function(df) {
+  if (nrow(df) < 3) return(df)  # Return unchanged if less than 3 rows
+  
+  # Calculate median and IQR
+  median_value <- median(df$viable.cells)
+  iqr_value <- IQR(df$viable.cells)
+  
+  # Define lower and upper bounds for outliers
+  lower_bound <- median_value - 1.5 * iqr_value
+  upper_bound <- median_value + 1.5 * iqr_value
+  
+  # Filter outliers
+  df_filtered <- df[df$viable.cells >= lower_bound & df$viable.cells <= upper_bound, , drop = FALSE]
+  
+  return(df_filtered)
+}
+
+# Step 3: Apply the filter_outliers function to each group
+filtered_groups <- lapply(grouped, filter_outliers)
+
+# Step 4: Combine filtered groups back into a single data frame
+filtered_IC.50_D1 <- do.call(rbind, filtered_groups)
+
+#Apply the filter_outliers function to each group
+filtered_groups <- lapply(grouped, filter_outliers)
+
+#Combine filtered groups back into a single data frame
+filtered_IC.50_D1 <- do.call(rbind, filtered_groups)
+
+#filtered_IC.50_D1 <- IC.50_D1
+
+
+#Calculate IC50 values for each condition and cell type inc. all cells
+IC.50.long_D1 <- filtered_IC.50_D1 %>% 
+  gather(key = "Cell.Type", value = "Viability.percentage", 2:6)
+  
+
+cmpd.values <- unique(IC.50.long_D1$Cmpd)
+cell.type.values <- unique(IC.50.long_D1$Cell.Type)
+
+IC50.list_D1 <- list()
+for (cmpd in cmpd.values) {
+  for (cell_type in cell.type.values) {
+
+    filtered_data_D1 <- IC.50.long_D1 %>%
+      filter(Cmpd == cmpd, Cell.Type == cell_type)
+    
+    if (nrow(filtered_data_D1) > 0) {  
+      
+      fitted_curve_D1 <- drm(formula = Viability.percentage ~ cmpd.conc,
+                          data = filtered_data_D1,
+                          fct = LL.4())
+      
+      Einf <- fitted_curve_D1$coefficients[2]
+      E0 <- fitted_curve_D1$coefficients[3]
+      EC50 <- fitted_curve_D1$coefficients[4]
+      H <-  fitted_curve_D1$coefficients[1]
+      IC50 <- exp(log((((Einf - E0) / (50 - E0)) - 1) * EC50**(-H)) / (-H))
+      
+      efficacy_metrics <- data.frame(c(E0, Einf, EC50, H, IC50))
+      rownames(efficacy_metrics) <- c('E0', 'Einf', 'EC50', 'H', 'IC50')
+      colnames(efficacy_metrics) <- 'Value'
+      
+      # Store the results in a list
+      IC50.list_D1[[paste(cmpd, cell_type, sep = "-->")]] <- efficacy_metrics
+    }
+  }
+}
+
+#Extracte IC50 values only for the viable cells
+IC50.all.cells_D1 <- data.frame(Cmpd = character(0), IC50 = numeric(0))
+for (key in names(IC50.list_D1)) {
+  if (grepl("viable.cells", key)) {
+    cmpd <- sub("-->viable.cells", "", key)  # Extract the Cmpd name
+    ic50_value <- IC50.list_D1[[key]]["IC50", "Value"]
+    IC50.all.cells_D1 <- rbind(IC50.all.cells_D1, data.frame(Cmpd = cmpd, IC50 = ic50_value))
+  }
+}
+
+IC50_annotation_data <- data.frame(
+  Cmpd = IC50.all.cells_D1$Cmpd,
+  IC50 = IC50.all.cells_D1$IC50,
+  label = ifelse(is.na(IC50.all.cells_D1$IC50), "IC50 = NA",
+                 ifelse(IC50.all.cells_D1$IC50 > 10^6, "IC50 = NA", paste("IC50 =", round(IC50.all.cells_D1$IC50, 2)))
+  )
+)
+
+
+#Compound.names <- c("Venetoclax + 1000nM Aza", "Venetoclax", "Azacitidine")
+
+plots_list <- lapply(unique(filtered_IC.50_D1$Cmpd), function(cmpd_group) {
+  subset_data <- filter(filtered_IC.50_D1, Cmpd == cmpd_group)
+ 
+   p <- ggplot(subset_data, aes(x = cmpd.conc)) +
+    geom_point(aes(y = CD38.neg, color = "CD38 Negative"), shape = 19) +
+    geom_point(aes(y = CD38.pos, color = "CD38 Positive"), shape = 19) +
+    geom_point(aes(y = LSC, color = "LSC"), shape = 19) +
+    geom_point(aes(y = Progenitors, color = "Progenitors"), shape = 19) +
+    geom_point(aes(y = viable.cells, color = "Total viable cells"), shape = 19) +
+    geom_smooth(aes(y = CD38.neg), color = "#9bc6eb", method = drm, method.args = list(fct = L.4()), se = FALSE) +
+    geom_smooth(aes(y = CD38.pos), color = "#eea0a6", se = FALSE, method = drm, method.args = list(fct = L.4())) +
+    geom_smooth(aes(y = LSC), color = "#a6efa2", se = FALSE, method = drm, method.args = list(fct = L.4())) +
+    geom_smooth(aes(y = Progenitors), color = "#a798cb", se = FALSE, method = drm, method.args = list(fct = L.4())) +
+    geom_smooth(aes(y = viable.cells), color = "black", se = FALSE, method = drm, method.args = list(fct = L.4()), linetype = "dashed")+
+    scale_x_log10() +
+    xlab("Dose [nM]") +
+    ylab("Relative Cell Count [%]") +
+    scale_color_manual(values = c("CD38 Negative" = "#3391df", "CD38 Positive" = "#d04a54",
+                                   "LSC" = "#53ca4d", "Progenitors" = "#64548a", "Total viable cells" = "black")) +
+    scale_y_continuous(limits = c(0, 150), breaks = seq(0, 150, 50)) +
+    theme_bw() +
+    geom_text(data = IC50_annotation_data[IC50_annotation_data$Cmpd == cmpd_group, ],
+              aes(x = max(subset_data$cmpd.conc), y = 150, label = label),
+             hjust = 1,
+              size = 5, color = "black",
+              fontface = "bold") +
+    labs(title = cmpd_group, color = "Cell Type") +
+     theme(plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),
+          axis.text = element_text(size = 12),         # Change size of axis numbers
+          axis.title = element_text(size = 14),
+          legend.text = element_text(size = 16),       # Change size of legend text
+          legend.title = element_text(size = 16)  )
+
+  return(p)
+})
+
+wrap_plots(plots_list, nrow = 1) +
+  plot_layout(guides = "collect")
+
+ggsave(
+   filename = "/Users/kathrinekaas/Dropbox/CDL/HTS_July_2024/Plots/July_IC50_Day3.pdf",
+   device = "pdf",
+   width = 20,
+   height = 5)
+
+plots_list <- lapply(unique(filtered_IC.50_D1$Cmpd), function(cmpd_group) {
+  subset_data <- filter(filtered_IC.50_D1, Cmpd == cmpd_group)
+
+  # Calculate means and standard deviations
+  summary_data <- subset_data %>%
+    group_by(cmpd.conc) %>%
+    summarise(
+      CD38.neg.mean = mean(CD38.neg), CD38.neg.sd = sd(CD38.neg),
+      CD38.pos.mean = mean(CD38.pos), CD38.pos.sd = sd(CD38.pos),
+      LSC.mean = mean(LSC), LSC.sd = sd(LSC),
+      Progenitors.mean = mean(Progenitors), Progenitors.sd = sd(Progenitors),
+      viable.cells.mean = mean(viable.cells), viable.cells.sd = sd(viable.cells)
+    )
+
+  p <- ggplot(summary_data, aes(x = cmpd.conc)) +
+    #geom_errorbar(aes(ymin = CD38.neg.mean - CD38.neg.sd, ymax = CD38.neg.mean + CD38.neg.sd, color = "CD38 Negative"), width = 0.2) +
+    geom_line(aes(y = CD38.neg.mean, color = "CD38 Negative"), size = 1.2) +
+    #geom_errorbar(aes(ymin = CD38.pos.mean - CD38.pos.sd, ymax = CD38.pos.mean + CD38.pos.sd, color = "CD38 Positive"), width = 0.2) +
+    geom_line(aes(y = CD38.pos.mean, color = "CD38 Positive"), size = 1.2) +
+    #geom_errorbar(aes(ymin = LSC.mean - LSC.sd, ymax = LSC.mean + LSC.sd, color = "LSC"), width = 0.2) +
+    geom_line(aes(y = LSC.mean, color = "LSC"), size = 1.2) +
+    #geom_errorbar(aes(ymin = Progenitors.mean - Progenitors.sd, ymax = Progenitors.mean + Progenitors.sd, color = "Progenitors"), width = 0.2) +
+    geom_line(aes(y = Progenitors.mean, color = "Progenitors"), size = 1.2) +
+    geom_errorbar(aes(ymin = viable.cells.mean - viable.cells.sd, ymax = viable.cells.mean + viable.cells.sd, color = "Total viable cells"), width = 0.2, size = 0.6) +
+    geom_line(aes(y = viable.cells.mean, color = "Total viable cells"), size = 2.2) +
+    scale_x_log10() +
+    xlab("Dose [nM]") +
+    ylab("Relative Cell Count [%]") +
+    scale_y_continuous(limits = c(0, 150), breaks = seq(0, 150, 50)) +
+    scale_color_manual(values = c("CD38 Negative" = "#3391df", "CD38 Positive" = "#d04a54",
+                                  "LSC" = "#53ca4d", "Progenitors" = "#64548a", "Total viable cells" = "black")) +
+    theme_bw() +
+    geom_text(data = IC50_annotation_data[IC50_annotation_data$Cmpd == cmpd_group, ],
+              aes(x = max(subset_data$cmpd.conc), y = 150, label = label),
+              hjust = 1, hjust = 0.5,
+              size = 5, color = "black",
+              fontface = "bold") +
+    labs(title = cmpd_group, color = "Cell Type") +
+    theme(plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),
+          axis.text = element_text(size = 12),         # Change size of axis numbers
+          axis.title = element_text(size = 14),
+          legend.text = element_text(size = 16),       # Change size of legend text
+  legend.title = element_text(size = 16)  )
+
+  return(p)
+})
+
+wrap_plots(plots_list, nrow = 1) +
+  plot_layout(guides = "collect")
+
+ggsave(
+   filename = "/Users/kathrinekaas/Dropbox/CDL/HTS_July_2024/Plots/July_IC50_Day3_Std.pdf",
+   device = "pdf",
+   width = 20,
+   height = 5)
+```
+

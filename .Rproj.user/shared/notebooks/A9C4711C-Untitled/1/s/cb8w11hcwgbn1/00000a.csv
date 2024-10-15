@@ -1,0 +1,5 @@
+"0","limma::plotDensities(assay(scp[[""Proteins_scaled""]]), legend = FALSE)
+limma::plotDensities(assay(scp[[""Proteins_centered""]]), legend = FALSE)
+"
+"0","limma::plotDensities(assay(scp[[""Proteins""]]), legend = FALSE)"
+"0",""

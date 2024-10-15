@@ -1,0 +1,71 @@
+"0","for (feature in features) {
+  
+  # Subset and transform the data for the current feature
+  feature_df <- longFormat(scp[feature, ]) |>
+      as.data.frame() |>
+      filter(assay %in% c(""lognorm_Precursors_quantiles"",""Peptides"", ""Proteins"")) |>
+      mutate(
+      assay = factor(assay, levels = c(""lognorm_Precursors_quantiles"", ""Peptides"", ""Proteins"")),
+      replicate = str_extract(primary, replicate_pattern),
+      replicate = if_else(is.na(replicate), ""1892"", replicate),
+      sample = str_extract(colname, ""(?<=_)[0-9]+(?=FG\\.MS1Quantity)""),
+      id = paste(replicate, sample, sep = ""_""),
+      condition = case_when(
+        replicate %in% wt1_replicates ~ ""WT 1: +/+; Mx1-Cre"",
+        replicate %in% wt2_replicates ~ ""WT 2: fl/+"",
+        replicate %in% hetko_replicates ~ ""HetKO: fl/+; Mx1-Cre""),
+      feature_name = feature_names[feature]) 
+  
+  feature_df_mean <- feature_df %>%
+  group_by(assay, replicate, sample, condition) %>%
+  summarize(mean_value = mean(value, na.rm = TRUE), .groups = 'drop')
+
+  # Define new colors for mean lines and points for each assay
+  mean_line_colors <- c(""lognorm_Precursors_quantiles"" = ""gray"",  # Tomato
+                      ""Peptides"" = ""gray"",                      # MediumSeaGreen
+                      ""Proteins_scaled"" = ""#005b96"")  
+  
+# Plotting the original data points and the summarized mean lines on top
+  p <- ggplot() +
+       geom_point(data = feature_df, aes(x = sample, 
+                                    y = value, 
+                                    color = assay, 
+                                    group = replicate)) +
+  
+  # Add the mean lines with specific colors for each assay
+       geom_line(data = feature_df_mean, aes(x = sample, 
+                                        y = mean_value, 
+                                        group = replicate), 
+            color = mean_line_colors[feature_df_mean$assay], # Assign mean line colors
+            linetype = ""solid"", 
+            size = 1) +  
+  
+  # Add mean points with the same colors as the mean lines
+       geom_point(data = feature_df_mean, aes(x = sample, 
+                                         y = mean_value, 
+                                         group = replicate), 
+             color = mean_line_colors[feature_df_mean$assay], # Assign mean line colors to points
+             size = 1) +
+    
+        facet_grid(assay ~ condition, scales = ""free_y"", drop = TRUE) +  # Allow free y-axis scaling for different assays
+        scale_color_manual(values = assay_colors) +  # Use original colors for data points
+        theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8)) +
+        labs(title = paste(""Feature:"", feature_names[feature]))
+
+# Print the plot
+print(p)
+
+#ggsave(
+    #filename = paste0(output_directory, ""/"", feature_names[feature], "".pdf""), 
+    #plot = p,  
+    #device = ""pdf"", 
+    #width = 8,       
+    #height = 6)
+}
+"
+"2","harmonizing input:
+  removing 144 sampleMap rows not in names(experiments)
+"
+"2","Warning:"
+"2"," [38;5;255mRemoved 43198 rows containing missing values or values outside the scale range (`geom_point()`).[39m
+"

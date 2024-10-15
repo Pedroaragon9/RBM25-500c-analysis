@@ -1,0 +1,6 @@
+"0","inputData <- SN.PEPquant %>%
+  select(all_of(inputCols))
+"
+"2","Error in select(., all_of(inputCols)) : 
+  unused argument (all_of(inputCols))
+"

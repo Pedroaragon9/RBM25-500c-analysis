@@ -1,0 +1,19 @@
+"0","# Log2 transoform
+scp <- logTransform(scp,
+                    i = ""Precursors"",
+                    name = ""Precursors_log"")
+
+# Normalize the data
+# TODO: Keep an eye on other normalization methods
+par(mfrow = c(1, 2))
+limma::plotDensities(assay(scp[[""Precursors""]]), legend = FALSE)
+limma::plotDensities(assay(scp[[""Precursors_log""]]), legend = FALSE)
+scp <- normalizeSCP(scp,
+                    i= ""Precursors_log"",
+                    name = ""lognorm_Precursors_quantiles"",
+                    method = ""quantiles"")
+par(mfrow = c(1, 2))
+# limma::plotDensities(assay(scp[[""lognorm_Precursors""]]), legend = FALSE)
+limma::plotDensities(assay(scp[[""lognorm_Precursors_quantiles""]]), legend = FALSE)
+"
+"0",""

@@ -1,0 +1,152 @@
+"0","isIdentified <- function(x) colSums(!is.na(x)) != 0
+
+scpNA <- aggregateFeaturesOverAssays(scp,
+                                  i = grep(""20240705"", names(scp)),    ## assays to be aggregated
+                                  name = paste0(""MV_proteins"", grep(""20240705"", names(scp))), ## new assay name
+                                  fcol = ""PG.ProteinAccessions"",    ## what to aggregate
+                                  fun = isIdentified)                                  
+"
+"2","Aggregated: 1/48
+
+"
+"2","Aggregated: 2/48
+
+"
+"2","Aggregated: 3/48
+
+"
+"2","Aggregated: 4/48
+
+"
+"2","Aggregated: 5/48
+
+"
+"2","Aggregated: 6/48
+
+"
+"2","Aggregated: 7/48
+
+"
+"2","Aggregated: 8/48
+
+"
+"2","Aggregated: 9/48
+
+"
+"2","Aggregated: 10/48
+
+"
+"2","Aggregated: 11/48
+
+"
+"2","Aggregated: 12/48
+
+"
+"2","Aggregated: 13/48
+
+"
+"2","Aggregated: 14/48
+
+"
+"2","Aggregated: 15/48
+
+"
+"2","Aggregated: 16/48
+
+"
+"2","Aggregated: 17/48
+
+"
+"2","Aggregated: 18/48
+
+"
+"2","Aggregated: 19/48
+
+"
+"2","Aggregated: 20/48
+
+"
+"2","Aggregated: 21/48
+
+"
+"2","Aggregated: 22/48
+
+"
+"2","Aggregated: 23/48
+
+"
+"2","Aggregated: 24/48
+
+"
+"2","Aggregated: 25/48
+
+"
+"2","Aggregated: 26/48
+
+"
+"2","Aggregated: 27/48
+
+"
+"2","Aggregated: 28/48
+
+"
+"2","Aggregated: 29/48
+
+"
+"2","Aggregated: 30/48
+
+"
+"2","Aggregated: 31/48
+
+"
+"2","Aggregated: 32/48
+
+"
+"2","Aggregated: 33/48
+
+"
+"2","Aggregated: 34/48
+
+"
+"2","Aggregated: 35/48
+
+"
+"2","Aggregated: 36/48
+
+"
+"2","Aggregated: 37/48
+
+"
+"2","Aggregated: 38/48
+
+"
+"2","Aggregated: 39/48
+
+"
+"2","Aggregated: 40/48
+
+"
+"2","Aggregated: 41/48
+
+"
+"2","Aggregated: 42/48
+
+"
+"2","Aggregated: 43/48
+
+"
+"2","Aggregated: 44/48
+
+"
+"2","Aggregated: 45/48
+
+"
+"2","Aggregated: 46/48
+
+"
+"2","Aggregated: 47/48
+
+"
+"2","Aggregated: 48/48
+
+"

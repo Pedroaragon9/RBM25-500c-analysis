@@ -1,0 +1,5 @@
+"0","p <- filterFeatures(scp, i = ""Precursors"", 
+                               ~ rowSums(assay(scp, ""Precursors"") > 1e-3) > 0)
+"
+"2","Error in rowSums(out) : 'x' must be numeric
+"
