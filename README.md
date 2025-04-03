@@ -18,3 +18,6 @@ This analysis primarily relies on the following R packages:
 ## Figures
 
 Output figures generated from the analysis can be found in the `Figures` folder of this repository.
+
+## Raw Data and Quantitative tables
+All mass spectrometry-based proteomics data files and quantitative tables have been deposited to the MassIVE repository under the dataset identifier `MSV000097482` and are available via the ProteomeXchange Consortium with the identifier `PXD062478`.
